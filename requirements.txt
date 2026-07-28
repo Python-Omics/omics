@@ -2,3 +2,5 @@ pycirclize
 matplotlib
 pandas
 numpy
+seaborn
+scipy
