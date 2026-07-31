@@ -3,6 +3,7 @@ Implementación CIM (Clustered Image Map) o Clustered Heatmap
 
 ...
 """
+from numpy.random import sample
 import pandas as pd
 import seaborn as sns
 import matplotlib.pyplot as plt
@@ -27,7 +28,7 @@ def plot_cim(
     model: objeto pythomics.models
         modelo entrenado...
     components: int/tuple
-        componentes a mostrar en el plot
+        componentes a mostrar en el plot (usado para filtrar variables seleccionadas)
     block_colors: dict
         diccionario que mapea nombre de bloque a color (hexadecimal o nombre de color de matplotlib).
         La cantidad de colores debe ser igual a la cantidad de bloques en el modelo.
@@ -54,6 +55,11 @@ def plot_cim(
         block_colors = {}
     if group_colors is None:
         group_colors = {}
+    
+    # se asegura que components sea lista iterable
+    if isinstance(components, int):
+        components = [components]
+
 
     # -- concatenar horizontalmente los bloques de datos (matrices X) de todos los bloques --
     blocks = list(model.X.keys())
@@ -61,6 +67,12 @@ def plot_cim(
     col_color_list = []
 
     for block in blocks:
+        # TODO: IMPORTANTE; filtrar df_block basándose en 'components'
+        # ej:
+        # selected_features = model.get_selected_features(block=block, components=components)
+        # df_block = model.X[block][selected_features]
+        
+        # NOTE: por ahora se usa todo el bloque sin fitlrar por componentes
         df_block = model.X[block]
         df_concat_list.append(df_block)
         
@@ -68,10 +80,12 @@ def plot_cim(
         block_color = block_colors.get(block, 'grey')
         col_color_list.extend([block_color] * df_block.shape[1])
     
-    df_concat = pd.concat(df_concat_list, axis=1)
+    df_concat = pd.concat(df_concat_list, axis=1).dropna()
     
     # -- mapeo de colores de filas (muestras) según grupo --
     sample_groups = model.Y
+    sample_groups = sample_groups.loc[df_concat.index] # se asegura que Y coincida con los indices que se preservan en df_concat
+    
     row_colors = sample_groups.map(group_colors)
     row_colors.name = "Grupo"
     

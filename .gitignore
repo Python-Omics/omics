@@ -1,0 +1,49 @@
+# -- Python --
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# -- Entornos Virtuales --
+venv/
+_venv/
+.venv/
+env/
+ENV/
+
+# -- Jupyter Notebooks y Exploración --
+.ipynb_checkpoints/
+*.ipynb
+
+# -- IDEs y Editores --
+.idea/
+.vscode/
+.DS_Store
+
+# -- Carpetas de Resultados / Datos --
+results/
+replica/data/
+*.h5mu
+*.h5ad
+
+# -- Logs y Otros --
+*.log
+.pytest_cache/
+.coverage
+htmlcov/

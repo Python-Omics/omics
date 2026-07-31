@@ -55,7 +55,7 @@ def plot_circos(
     
     Returns:
     fig, ax: tuple
-        figura y eje, para guardar
+        Objetos figura y eje de matplotlib, para guardar o modificar
     """
     links = []
     blocks = list(model.names_.keys())

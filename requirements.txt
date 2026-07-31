@@ -4,3 +4,9 @@ pandas
 numpy
 seaborn
 scipy
+adjustText
+muon
+anndata
+pydeseq2
+pytest
+rpy2
