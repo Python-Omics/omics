@@ -38,7 +38,7 @@ ENV/
 
 # -- Carpetas de Resultados / Datos --
 results/
-replica/data/
+data/
 *.h5mu
 *.h5ad
 

@@ -10,13 +10,21 @@ import matplotlib.pyplot as plt
 import matplotlib.lines as mlines
 import pycirclize
 
+def get_cross_corr(X, T):
+    """
+    Calcula correlación de Pearson entre columnas de X y columnas de T
+    """
+    X_std = (X - X.mean(axis=0)) / (X.std(axis=0) + 1e-8)
+    T_std = (T - T.mean(axis=0)) / (T.std(axis=0) + 1e-8)
+    return (X_std.T @ T_std) / X.shape[0]
+
 def plot_circos(
     model,
     cutoff=0.5,
     components=(1, 2),
     block_colors=None,
     group_colors=None,
-    link_colors=('#FF0000', '#0000FF'),
+    link_colors=('#CE671C', '#343434'),
     show_intra_links=False,
     show_var_names=True,
     title='Circos Plot - pythomics',
@@ -57,6 +65,9 @@ def plot_circos(
     fig, ax: tuple
         Objetos figura y eje de matplotlib, para guardar o modificar
     """
+    if isinstance(components, int):
+        components = (1, components)
+
     links = []
     blocks = list(model.names_.keys())
     
@@ -65,29 +76,70 @@ def plot_circos(
     if group_colors is None:
         group_colors = {}
 
-    # Calcular correlaciones entre bloques
+    active_features = {}
+    for block in blocks:
+        raw_loadings = model.loadings_[block][:, components[0]-1:components[1]]
+        
+        active_index = np.where(np.any(raw_loadings != 0, axis=1))[0]
+        
+        # se ordena por loading en la componente 1
+        sort_order = np.argsort(raw_loadings[active_index][:, 0])
+        ordered_index = active_index[sort_order]
+        
+        # se extraen los nombres reales de los biomarcadores
+        active_names = [model.names_[block][i] for i in ordered_index]
+        
+        X_df = model.X_dict_[block]
+        X_active = X_df[active_names].values # matriz de muestras x variables activas
+
+        active_features[block] = {
+            'indices': ordered_index,
+            'loadings': raw_loadings[ordered_index],
+            'names': active_names,
+            'X': X_active
+        }
+
+    variates = model.transform(model.X_dict_)
+
+    # calcular correlaciones entre los biomarcadores activos
     for i in range(len(blocks)):
         start_j = i if show_intra_links else i + 1
         for j in range(start_j, len(blocks)):
             b1, b2 = blocks[i], blocks[j]
             
-            loadings_i = model.loadings_[b1][:, components[0]-1:components[1]]
-            loadings_j = model.loadings_[b2][:, components[0]-1:components[1]]
+            X1 = active_features[b1]['X']
+            T1 = variates[b1][:, components[0]-1:components[1]]
+
+            X2 = active_features[b2]['X']
+            T2 = variates[b2][:, components[0]-1:components[1]]
             
-            corr = np.corrcoef(loadings_i, loadings_j)[:len(loadings_i), len(loadings_i):]
+            # calcular correlaciones
+            corr_X1_T1 = get_cross_corr(X1, T1)
+            corr_X2_T2 = get_cross_corr(X2, T2)
             
+            corr = (corr_X1_T1 @ corr_X2_T2.T)
+            
+            # añadir aristas segun cutoff
             rows, columns = np.where(np.abs(corr) >= cutoff)
             
             for vi, vj in zip(rows, columns):
                 links.append({
-                    'block1': b1, 'idx1': vi, 'var1': model.names_[b1][vi],
-                    'block2': b2, 'idx2': vj, 'var2': model.names_[b2][vj],
+                    'block1': b1, 'idx1': vi, 'var1': active_features[b1]['names'][vi],
+                    'block2': b2, 'idx2': vj, 'var2': active_features[b2]['names'][vj],
                     'corr': corr[vi, vj]
                 })
 
     # crear circos con pycirclize
-    sectors = {b: len(model.names_[b]) for b in blocks} # se crea un sector por bloque, con tamaño igual a cantidad variables
+    sectors = {b: len(active_features[b]['names']) for b in blocks} # se crea un sector por bloque, con tamaño cantidad de variables biomarcadores
+    
+    # manejar caso extremo donde se descartó todo
+    if sum(sectors.values()) == 0:
+        raise ValueError("Ninguna variable superó el umbral de varianza. Revisa keepX o cutoff.")
+    
     circos = pycirclize.Circos(sectors, space=5)
+    
+    # se extraen las medias crudas para las curvas de expresión
+    all_group_means = model.get_expression_means(active_features, group_colors)
     
     for sector in circos.sectors:
         
@@ -101,11 +153,11 @@ def plot_circos(
         # etiqueta grande con nombre del bloque
         sector.text(sector.name, r=105, size=14, weight="bold")
 
-        names = model.names_[sector.name]
+        names = active_features[sector.name]['names']
 
         # se pintan sub-bloques intercalados para cada variable (para ver separación entre variables)
         for i in range(len(names)):
-            current_alpha = 0.7 if i % 2 == 0 else 0.3 # se usa módulo para alternar tonalidades
+            current_alpha = 0.8 if i % 2 == 0 else 0.4 # se usa módulo para alternar tonalidades
             
             sector.rect(i, i+1, r_lim=(70, 75), fc=fc_color, alpha=current_alpha, ec="none")
 
@@ -118,20 +170,18 @@ def plot_circos(
         track_expression = sector.add_track((80, 100))
         x_pos = np.arange(len(names)) + 0.5
         
+        group_means = all_group_means[sector.name]
+        all_means_arr = np.array(list(group_means.values()))
+        block_min, block_max = all_means_arr.min(), all_means_arr.max()
+
         for group_name, color in group_colors.items():
-            # TODO: cuando se tenga implementación real, extraer promedio real de expresión 
-            # y_expression = model.get_expression_mean(block=sector.name, group=group_name)
-            
-            y_expression = np.random.uniform(0, 1, size=len(names)) # por ahora aleatorio   
-            
-            # dibujar curva
-            track_expression.line(x_pos, y_expression, color=color, lw=1.2, vmin=0, vmax=1)
-        
+            y_expression = group_means[group_name]
+            track_expression.line(x_pos, y_expression, color=color, lw=1.2, vmin=block_min, vmax=block_max)
     
     # dibujar links
     for link in links:
         color = link_colors[0] if link['corr'] > 0 else link_colors[1]
-        alpha = min(abs(link['corr']), 1.0) # Asegurar que alpha no pase de 1
+        alpha = min(max((abs(link['corr']) - cutoff) / (1 - cutoff) * 0.8 + 0.2, 0.2), 0.8)    
         
         region1_start = link['idx1'] + 0.48
         region1_end = link['idx1'] + 0.52

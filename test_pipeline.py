@@ -10,12 +10,8 @@ import anndata as ad
 import mudata as md
 from pydeseq2.dds import DeseqDataSet
 from pydeseq2.ds import DeseqStats
-from sklearn.decomposition import PCA
-from sklearn.preprocessing import StandardScaler
-import scipy.sparse as sp
-import seaborn as sns
 
-from pythomics.models import MockDIABLO
+from pythomics.models import DIABLOWrapper
 from pythomics.tools import NipalsPCA
 from pythomics.visualizations import plot_circos, plot_cim, plot_volcano, plot_pca
 
@@ -26,7 +22,7 @@ def load_and_preprocess_data():
     Se carga, limpia y se construye el objeto MuData
     """
     # -- carga metadatos --
-    metadata = pd.read_csv("replica/data/metadata.csv", sep=";", index_col=0)
+    metadata = pd.read_csv("data/replica/data/metadata.csv", sep=";", index_col=0)
     
     # NOTE: en metadata.csv cada muestra tiene forma "Muestra_01_R1", "Muestra_01_R2",
     # pero en los otros datos solo se tiene "Muestra_01". Además de que hay duplicados
@@ -44,7 +40,7 @@ def load_and_preprocess_data():
             metadata[col] = metadata[col].astype('category')
     
     # -- carga datos transcriptómicos --
-    rna_raw = pd.read_csv("replica/data/salmon_counts.txt", sep="\t", skiprows=1, index_col=0)
+    rna_raw = pd.read_csv("data/replica/data/salmon_counts.txt", sep="\t", skiprows=1, index_col=0)
     
     # limpieza nombres de columnas
     clean_columns = [os.path.basename(col).replace("_Aligned.sortedByCoord.out.bam", "") for col in rna_raw.columns]
@@ -58,7 +54,7 @@ def load_and_preprocess_data():
     rna_counts = rna_raw.T
 
     # -- carga y limpieza de datos proteómicos --
-    prot_raw = pd.read_csv("replica/data/matrix_proteomico.csv", sep=";", decimal=",",index_col=0)
+    prot_raw = pd.read_csv("data/replica/data/matrix_proteomico.csv", sep=";", decimal=",",index_col=0)
     
     prot_raw.index.name = "ProteinID"
     prot_raw.columns.name = "SampleID"
@@ -111,26 +107,32 @@ def load_and_preprocess_data():
     
     # se usa estructura de datos anndata para empaquetar cada ómica de forma individual
     adata_rna = ad.AnnData(X=X_rna, obs=obs_df, var=var_df_rna)
-    adata_rna.layers["counts"] = X_rna.copy()
+    # adata_rna.layers["counts"] = X_rna.copy()
     adata_prot = ad.AnnData(X=X_prot, obs=obs_df, var=var_df_prot)
-    adata_prot.layers["counts"] = X_prot.copy()
-
-    for adata in [adata_rna, adata_prot]:
-        if None in adata.layers:
-            del adata.layers[None]
+    # adata_prot.layers["counts"] = X_prot.copy()
+ 
+    adata_rna.layers["counts"] = adata_rna.X.copy()
+    adata_prot.layers["counts"] = adata_prot.X.copy()
 
     # se usa estructura de datos mudata para empaquetar todas las ómicas en un solo objeto
     mdata = md.MuData({
         'mRNA': adata_rna,
         'Proteinas': adata_prot
     })
-
+    
+    # sincroniza los metadatos de las muestras (obs) hacia arriba en el objeto MuData
+    # (de otra forma para acceder a los metadatos habría que acceder a una de las ómicas específicas)
+    mdata.update()
+    # for mod in mdata.mod.values():
+    #     mod.layers = {k: v for k, v in mod.layers.items() if k is not None}
+ 
+    # NOTE: ME DA ERRORES AL QUERER GUARDAR EN DISCO Y NO HE PODIDO ARREGLARLOOS, POR AHORA NO GUARDO
     # se guarda objeto mudata en disco, en formato h5mu
-    os.makedirs("results", exist_ok=True)    
-    output_path = "results/mudata_omics.h5mu"
-    if os.path.exists(output_path):
-        os.remove(output_path)
-    mdata.write("results/mudata_omics.h5mu")
+    # os.makedirs("results", exist_ok=True)    
+    # output_path = "results/mudata_omics.h5mu"
+    # if os.path.exists(output_path):
+    #     os.remove(output_path)
+    # mdata.write_h5mu("results/mudata_omics.h5mu")
 
     print(mdata)
     return mdata
@@ -164,9 +166,9 @@ def run_deseq2_analysis(mdata):
     dds.deseq2()
 
     # -- pca (idea es replicar comportamiento de pca en R) --
-    dds_norm = dds.layers['normed_counts']
-    vsd = np.log2(dds_norm + 1)
-
+    dds.vst(use_design=True)
+    vsd = dds.layers['vst_counts']
+    mdata.mod['mRNA'].X = vsd
     # calcular la varianza de cada gen a través de las muestras
     gene_vars = np.var(vsd, axis=0)
     
@@ -233,17 +235,50 @@ if __name__ == "__main__":
     
     # -- análisis diferencial de expresión (transcriptómica) --
     run_deseq2_analysis(mdata)
+    
+    # se seleccionan los 3000 genes con mayor varianza para la integración multiomica
+    adata_rna = mdata.mod['mRNA']
+    variances = np.var(adata_rna.X, axis=0)
+    top_3000_idx = np.argsort(variances)[-3000:]
+    
+    mdata.mod['mRNA'] = adata_rna[:, top_3000_idx].copy()
+    mdata.update()
 
+    # -- integración multiómica con DIABLO --
+    keepX_config = {
+        'mRNA': [30, 30], # 30 genes para comp1 y 30 genes para comp2
+        'Proteinas': [30, 30] # 30 prots para comp1 y 30 prots para comp2
+    }
+    
+    design_matrix = np.array([
+        [0.0, 0.1],
+        [0.1, 0.0]
+    ])
 
-    # instanciacion de modelo a usar
-    modelo_diablo = MockDIABLO(
-        path_rna="replica/results/tables/Biomarcadores_RNA_Elite.csv", 
-        path_prot="replica/results/tables/Biomarcadores_Proteinas_Elite.csv",
-        path_proteomics="replica/data/matrix_proteomico.csv",
-        path_vsd="replica/data/vsd_assay.csv",
-        path_metadata="replica/data/metadata.csv"
+    diablo = DIABLOWrapper.from_mudata(
+        mdata, 
+        target_col="Temporada", 
+        n_components=2, 
+        keepX=keepX_config,
+        design=design_matrix
     )
+    diablo.fit()
+        
+    # -- guardar biomarcadores seleccionados por DIABLO --
+    os.makedirs("results/tables", exist_ok=True)
 
+    biomarkers_arn = diablo.get_biomarkers(block='mRNA', comp=1)
+    biomarkers_prot = diablo.get_biomarkers(block='Proteinas', comp=1)
+
+    biomarkers_arn.to_csv("results/tables/biomarcadores_mRNA_Elite_Python.csv")
+    biomarkers_prot.to_csv("results/tables/biomarcadores_Proteinas_Elite_Python.csv")
+
+    print("Bloques integrados:", diablo.block_names_)
+
+    scores = diablo.transform(diablo.X_dict_)
+
+    for block, variates in scores.items():
+        print(f"Bloque {block}: Coordenadas calculadas para {variates.shape[0]} muestras en {variates.shape[1]} componentes.")
 
     # -- visualizaciones --
     block_colors = {
@@ -258,89 +293,46 @@ if __name__ == "__main__":
         'V': '#2ca02c'
     } 
     
-    os.makedirs("plots", exist_ok=True) # carpeta para ir guardando visualizaciones de ejemplo
+    os.makedirs("results/plots", exist_ok=True) # carpeta para ir guardando visualizaciones de ejemplo
     # -----------------------------------------------
-    # fig, ax = plot_circos(
-    #     model=modelo_diablo,
-    #     figsize=(10, 10),
-    #     cutoff=0.7,
-    #     block_colors=block_colors,
-    #     group_colors=groups_colors,
-    #     link_colors=('#CE671C', '#343434'),
-    #     title="DIABLO Circos Plot"
-    # )
-    #
-    # # guardado de figura
-    # fig.savefig(
-    #     "plots/example_circos_plot.png",
-    #     dpi=300, # res
-    #     bbox_inches="tight", # para que no se recorte nada
-    #     facecolor="white" # asegura fondo blanco
-    #
-    # )
-    # # ----------------------------------------------
-    # grid_cim = plot_cim(
-    #     model=modelo_diablo,
-    #     figsize=(12, 12),
-    #     block_colors=block_colors,
-    #     group_colors=groups_colors,
-    #     title="Heatmap Integrado: Transcriptómica y Proteómica",
-    # )
-    #
-    # # guardado de figura
-    # grid_cim.savefig(
-    #     "plots/example_cim_plot.png",
-    #     dpi=300, # res,
-    #     bbox_inches="tight",
-    #     facecolor="white"
-    # )
-    # # ----------------------------------------------
-    # # NOTE: acá se simulan datos para Volcano plot 
-    # np.random.seed(42)
-    # n_genes = 10000
-    #
-    # # 1. Crear Nombres de Genes
-    # gene_names = [f"Gene_{i}" for i in range(1, n_genes + 1)]
-    #
-    # # 2. Simular Log2 Fold Change (mayormente normal, con algunos extremos)
-    # # Mezclamos una distribución normal estándar con dos distribuciones anchas
-    # log2fc = np.concatenate([
-    #     np.random.normal(0, 1.5, int(n_genes * 0.8)),     # Masa central
-    #     np.random.normal(5, 2, int(n_genes * 0.1)),       # Sobre-expresados
-    #     np.random.normal(-5, 2, int(n_genes * 0.1))       # Sub-expresados
-    # ])
-    # np.random.shuffle(log2fc)
-    #
-    # # 3. Simular p-values 
-    # # Generamos p-values aleatorios entre 0 y 1
-    # pvalues = np.random.uniform(0, 1, n_genes)
-    #
-    # # Hacemos que los genes con fold change extremo tengan p-values muy pequeños
-    # # Esto simula la correlación natural en biología donde cambios grandes suelen ser significativos
-    # extreme_mask = abs(log2fc) > 2.5
-    # num_extremes = extreme_mask.sum()
-    #
-    # # Asignamos p-values súper pequeños (ej. entre 1e-10 y 1e-2) a los extremos
-    # pvalues[extreme_mask] = np.random.uniform(1e-20, 1e-2, num_extremes)
-    #
-    # # 4. Construir el DataFrame
-    # simulated_df = pd.DataFrame({
-    #     'gene_symbol': gene_names,
-    #     'log2FoldChange': log2fc,
-    #     'pvalue': pvalues
-    # })
-    #
-    # # -- volcano plot --
-    # fig, ax = plot_volcano(
-    #     df=simulated_df,
-    #     title="Simulated Data vs Control",
-    #     fc_cutoff=2.0,
-    #     pval_cutoff=0.01,
-    #     top_n_labels=15
-    # )
-    # # ------------------------------------------------
-    #
-    # # plot_indiv()
-    #
-    #
-    # plt.show()
+    fig, ax = plot_circos(
+        model=diablo,
+        figsize=(10, 10),
+        cutoff=0.7,
+        block_colors=block_colors,
+        group_colors=groups_colors,
+        link_colors=('#CE671C', '#343434'),
+        title="DIABLO Circos Plot"
+    )
+
+    # guardado de figura
+    fig.savefig(
+        "results/plots/circos_plot.png",
+        dpi=300, # res
+        bbox_inches="tight", # para que no se recorte nada
+        facecolor="white" # asegura fondo blanco
+
+    )
+    # ----------------------------------------------
+    grid_cim = plot_cim(
+        model=diablo,
+        components=[1],
+        figsize=(12, 12),
+        block_colors=block_colors,
+        group_colors=groups_colors,
+        title="Heatmap Integrado: Transcriptómica y Proteómica",
+    )
+
+    # guardado de figura
+    grid_cim.savefig(
+        "results/plots/cim_plot.png",
+        dpi=300, # res,
+        bbox_inches="tight",
+        facecolor="white"
+    )
+    # ----------------------------------------------
+
+    # plot_indiv()
+
+
+    plt.show()

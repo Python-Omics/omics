@@ -3,10 +3,8 @@ Implementación CIM (Clustered Image Map) o Clustered Heatmap
 
 ...
 """
-from numpy.random import sample
 import pandas as pd
 import seaborn as sns
-import matplotlib.pyplot as plt
 import matplotlib.lines as mlines
 
 def plot_cim(
@@ -37,7 +35,7 @@ def plot_cim(
     standardize: bool
         si True, apliza z-score por columnas para normalizar escalas entre bloques
     show_var_names: bool
-        si True, muestra nombres de etiquetas en borde de círculo
+        si True, muestra nombres de variables en el ehe x
     show_sample_names: bool
         si True, muestra los IDs de las muestras en el eje y
     title: str
@@ -62,29 +60,49 @@ def plot_cim(
 
 
     # -- concatenar horizontalmente los bloques de datos (matrices X) de todos los bloques --
-    blocks = list(model.X.keys())
+    blocks = list(model.X_dict_.keys())
     df_concat_list = []
     col_color_list = []
 
     for block in blocks:
-        # TODO: IMPORTANTE; filtrar df_block basándose en 'components'
-        # ej:
-        # selected_features = model.get_selected_features(block=block, components=components)
-        # df_block = model.X[block][selected_features]
-        
-        # NOTE: por ahora se usa todo el bloque sin fitlrar por componentes
-        df_block = model.X[block]
+        df_block = model.X_dict_[block]
+
+        # se filtran las variables seleccionadas por DIABLO (unión sobre los componentes pedidos);
+        # si el modelo no está ajustado o el bloque no tiene biomarcadores, se usa el bloque completo
+        selected_features = set()
+        if getattr(model, "loadings_", None) is not None:
+            if block in model.loadings_:
+                for comp in components:
+                    if 1 <= comp <= model.loadings_[block].shape[1]:
+                        biomarkers = model.get_biomarkers(block=block, comp=comp)
+                        selected_features.update(biomarkers.index)
+        if selected_features:
+            df_block = df_block[[col for col in df_block.columns if col in selected_features]]
+
         df_concat_list.append(df_block)
-        
+
         # asignar color de bloque a cada columna del bloque
         block_color = block_colors.get(block, 'grey')
         col_color_list.extend([block_color] * df_block.shape[1])
-    
+
     df_concat = pd.concat(df_concat_list, axis=1).dropna()
-    
+
+    # si hay nombres de variables repetidos entre bloques, se prefijan con el nombre del bloque
+    if df_concat.columns.duplicated().any():
+        df_concat = pd.concat(
+            [df.add_prefix(f"{block}::") for df, block in zip(df_concat_list, blocks)],
+            axis=1
+        ).dropna()
+
     # -- mapeo de colores de filas (muestras) según grupo --
-    sample_groups = model.Y
-    sample_groups = sample_groups.loc[df_concat.index] # se asegura que Y coincida con los indices que se preservan en df_concat
+    sample_groups = model.Y_
+    if isinstance(sample_groups, pd.Series):
+        try:
+            sample_groups = sample_groups.loc[df_concat.index]
+        except KeyError:
+            sample_groups = pd.Series(sample_groups.to_numpy(), index=df_concat.index)
+    else:
+        sample_groups = pd.Series(sample_groups, index=df_concat.index)
     
     row_colors = sample_groups.map(group_colors)
     row_colors.name = "Grupo"

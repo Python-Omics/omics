@@ -10,3 +10,4 @@ anndata
 pydeseq2
 pytest
 rpy2
+networkx

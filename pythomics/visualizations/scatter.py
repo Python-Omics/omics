@@ -34,7 +34,7 @@ def plot_pca(
         Título del gráfico
     figsize: tuple
         Tamaño de la figura (ancho, alto)
-    palette: str
+    palette: str/dict
         Paleta de colores de seaborn a utilizar (por defecto 'Set1')
     ax: matplotlib.axes.Axes
         Eje sobre el cual dibujar. Si None, se crea nueva figura y eje.
