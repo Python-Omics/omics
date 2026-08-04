@@ -1,4 +1,6 @@
 """
+Execution: python -m pytest -s tests/rcc_linnerud_test.py
+
 Unit tests for rcc.py, using the linnerud dataset from sklearn.
 
 This is the exact same dataset used in the official mixOmics rcc.R example:
@@ -9,6 +11,8 @@ This is the exact same dataset used in the official mixOmics rcc.R example:
 sklearn.datasets.load_linnerud() exposes 'data' (exercise) and 'target'
 (physiological), in the same order and with the same values as the R dataset
 (both originate from Tenenhaus 1998 / Rousseeuw & Leroy).
+
+
 """
 
 import numpy as np

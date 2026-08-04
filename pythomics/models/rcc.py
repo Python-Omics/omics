@@ -7,7 +7,7 @@ Provides capabilities to perform RCC using both Ridge and Shrinkage regularizati
 """
 
 from dataclasses import dataclass
-from rcc_utilities import *
+from pythomics.models.rcc_utilities import *
 
 @dataclass
 class RCCResult:
