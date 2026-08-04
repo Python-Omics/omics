@@ -4,6 +4,9 @@ import pandas as pd
 import numpy as np
 from typing import Dict, Tuple, Optional, Union
 
+import anndata as ad
+import mudata as md
+
 from pythomics.models import DIABLOWrapper
 from pythomics.tools import NipalsPCA
 from pythomics.visualizations import plot_pca, plot_circos, plot_cim, plot_network, plot_biomarkers
@@ -168,6 +171,28 @@ if __name__ == "__main__":
     
     # TODO: armar MuData con los 4 bloques ómicos y los metadatos
 
+    # -- CREACIÓN CONTENEDOR MUDATA --
+    # NOTE: usar MuData aquí no tiene mayor beneficio ni es necesario realmente en el script,
+    # pero se hace como ejemplo (además es como el estándar de python parece). se supone que 
+    # su mayor beneficio es la integración y compatiblidad con otras librerías de análisis multiómico
+    # de python (ver scverse), además de que para proyectos más grandes permite tener toda la data multiómica en un solo
+    # objeto y hacerlo portable, reutilizable y blbalbalbaala
+    print("=== Construyendo contenedor MuData ===")
+    adatas = {}
+    for omic_name, df in omics.items():
+        # se convierte cada dataframe a objeto AnnData
+        adatas[omic_name] = ad.AnnData(
+            X=df.values.astype(np.float32),
+            obs=pd.DataFrame(index=df.index),
+            var=pd.DataFrame(index=df.columns)
+        )
+    
+    # se empaqueta todo en mudata
+    mdata = md.MuData(adatas)
+    mdata.obs['Subtype'] = y_labels
+    mdata.update()
+    print("=== Contenedor MuData construido con éxito ===")
+    print(mdata)
 
     # -- paletas de colores bloques ómicos y etiquetas (subtipos CMS) --
     block_colors = {
@@ -186,11 +211,11 @@ if __name__ == "__main__":
     # -- pca para cada bloque ómico (exploración) --
     print("=== Aplicando PCA a cada bloque ómico para exploración de datos ===")
     os.makedirs("results/ml_omics/pca", exist_ok=True)
-    metadata_df = pd.DataFrame({'Subtype': y_labels})
+    metadata_df = mdata.obs.copy() # se usa directamente los metadaos de mudata
 
     # -- PCA bloque CNV --
     pca_cnv = NipalsPCA(n_components=2)
-    pca_cnv.fit_transform(omics["CNV"], y_labels) # bloque CNV
+    pca_cnv.fit_transform(mdata.mod["CNV"].to_df(), mdata.obs["Subtype"]) # bloque CNV
     
     fig, ax = plot_pca(
         model=pca_cnv, 
@@ -204,7 +229,7 @@ if __name__ == "__main__":
     
     # -- PCA bloque mRNA --
     pca_mrna = NipalsPCA(n_components=2)
-    pca_mrna.fit_transform(omics["mRNA"], y_labels) # bloque mRNA
+    pca_mrna.fit_transform(mdata.mod["mRNA"].to_df(), mdata.obs["Subtype"]) # bloque mRNA
 
     fig, ax = plot_pca(
         model=pca_mrna,
@@ -218,7 +243,7 @@ if __name__ == "__main__":
 
     # -- PCA bloque Methy --
     pca_methy = NipalsPCA(n_components=2)
-    pca_methy.fit_transform(omics["Methy"], y_labels) # bloque Methy
+    pca_methy.fit_transform(mdata.mod["Methy"].to_df(), mdata.obs["Subtype"]) # bloque Methy
 
     fig, ax = plot_pca(
         model=pca_methy,
@@ -232,7 +257,7 @@ if __name__ == "__main__":
 
     # -- PCA bloque miRNA --
     pca_mirna = NipalsPCA(n_components=2)
-    pca_mirna.fit_transform(omics["miRNA"], y_labels) # bloque miRNA
+    pca_mirna.fit_transform(mdata.mod["miRNA"].to_df(), mdata.obs["Subtype"]) # bloque miRNA
 
     fig, ax = plot_pca(
         model=pca_mirna,
@@ -248,7 +273,9 @@ if __name__ == "__main__":
     # -- DIABLO multiómico --
     print("=== Aplicando DIABLO para integración multiómica y selección de biomarcadores ===")
     design_matrix = np.full((4, 4), 0.1) # matriz de diseño 4 bloques
-    diablo_model = DIABLOWrapper(
+    diablo_model = DIABLOWrapper.from_mudata(
+        mdata=mdata,
+        target_col="Subtype",
         n_components=2,
         design=design_matrix,
         keepX={
@@ -258,7 +285,7 @@ if __name__ == "__main__":
             "miRNA": [30, 30]
         }
     )
-    diablo_model.fit(X_dict=omics, Y=y_labels)
+    diablo_model.fit()
     print("=== DIABLO multiómico completado ===")
     
     # -- guardar biomarcadores seleccionados por DIABLO --
