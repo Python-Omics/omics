@@ -1,0 +1,326 @@
+import os
+import matplotlib.pyplot as plt
+import pandas as pd
+import numpy as np
+from typing import Dict, Tuple, Optional, Union
+
+from pythomics.models import DIABLOWrapper
+from pythomics.tools import NipalsPCA
+from pythomics.visualizations import plot_pca, plot_circos, plot_cim, plot_network, plot_biomarkers
+
+def clean_tcga_barcode(barcode: str, length: int = 12) -> str:
+    """Estandariza los identificadores de muestras de TCGA."""
+    clean_id = str(barcode).strip().replace('.', '-')
+    if clean_id.startswith('TCGA'):
+        parts = clean_id.split('-')
+        if len(parts) >= 3:
+            return "-".join(parts[:3])
+    return clean_id
+
+
+def load_multiomics(
+    data_dir: str,
+    dataset_prefix: str = "KIRC",
+    task_type: str = "clustering",  # Opciones: "clustering" o "classification"
+    omics_files: Optional[Dict[str, str]] = None,
+    survival_file: Optional[str] = None,
+    labels_file: Optional[str] = None,
+    impute_missing: bool = True,
+    normalize_barcodes: bool = True
+) -> Tuple[Dict[str, pd.DataFrame], Optional[pd.DataFrame], Optional[pd.Series]]:
+    """Carga, orienta y alinea matrices multiómicas y datos clínicos/etiquetas (incluyendo labels sin ID)."""
+    
+    if omics_files is None:
+        omics_files = {
+            'CNV': f'{dataset_prefix}_CNV.csv',
+            'mRNA': f'{dataset_prefix}_mRNA.csv',
+            'Methy': f'{dataset_prefix}_Methy.csv',
+            'miRNA': f'{dataset_prefix}_miRNA.csv'
+        }
+
+    raw_omics = {}
+    sample_sets = []
+    original_sample_order = None  # Para respaldar el orden si las labels vienen sin IDs
+
+    print(f"=== 1. Carga y Detección de Orientación [{dataset_prefix}] (Modo: {task_type.upper()}) ===")
+    for omic_name, filename in omics_files.items():
+        filepath = os.path.join(data_dir, filename)
+        if not os.path.exists(filepath):
+            raise FileNotFoundError(f"No se encontró el archivo ómico: {filepath}")
+
+        df = pd.read_csv(filepath, index_col=0)
+        
+        # Detección automática si las muestras están en columnas o filas
+        sample_in_cols = any(str(col).startswith('TCGA') for col in df.columns)
+        if sample_in_cols:
+            df = df.T
+            
+        if normalize_barcodes:
+            df.index = [clean_tcga_barcode(idx) for idx in df.index]
+        
+        df = df[~df.index.duplicated(keep='first')]
+
+        raw_omics[omic_name] = df
+        
+        # Guardamos la lista de muestras de la primera ómica como referencia base
+        if original_sample_order is None:
+            original_sample_order = df.index.tolist()
+
+        sample_sets.append(set(df.index))
+        print(f"[{omic_name}] Dimensión (Muestras x Features): {df.shape}")
+
+    # --- 2. Manejo de Supervivencia (Opcional) ---
+    surv_df = None
+    if survival_file is None:
+        possible_surv_names = [f'survival_{dataset_prefix}.csv', f'{dataset_prefix}_survival.csv']
+        for name in possible_surv_names:
+            if os.path.exists(os.path.join(data_dir, name)):
+                survival_file = name
+                break
+
+    if survival_file and os.path.exists(os.path.join(data_dir, survival_file)):
+        surv_path = os.path.join(data_dir, survival_file)
+        surv_df = pd.read_csv(surv_path, index_col=0)
+        if normalize_barcodes:
+            surv_df.index = [clean_tcga_barcode(idx) for idx in surv_df.index]
+        surv_df = surv_df[~surv_df.index.duplicated(keep='first')]
+        sample_sets.append(set(surv_df.index))
+        print(f"[Survival] Registros cargados: {surv_df.shape[0]}")
+
+    # --- 3. Manejo de Etiquetas (Soporte para formato con o sin IDs) ---
+    labels_series = None
+    if task_type.lower() == "classification":
+        if labels_file is None:
+            possible_label_names = [f'{dataset_prefix}_labels.csv', f'labels_{dataset_prefix}.csv', 'labels.csv']
+            for name in possible_label_names:
+                if os.path.exists(os.path.join(data_dir, name)):
+                    labels_file = name
+                    break
+        
+        if labels_file and os.path.exists(os.path.join(data_dir, labels_file)):
+            labels_path = os.path.join(data_dir, labels_file)
+            
+            # Intentar leer asumiendo que tiene una columna de índice/IDs
+            try:
+                labels_df = pd.read_csv(labels_path, index_col=0)
+                # Verificar si el índice parece contener barcodes de TCGA o texto válido, 
+                # de lo contrario, probablemente sean solo números de fila puros (0, 1, 2...)
+                first_idx_str = str(labels_df.index[0])
+                if not (first_idx_str.startswith('TCGA') or '-' in first_idx_str):
+                    raise ValueError("El índice detectado no parece un identificador válido.")
+                
+                if normalize_barcodes:
+                    labels_df.index = [clean_tcga_barcode(idx) for idx in labels_df.index]
+                labels_df = labels_df[~labels_df.index.duplicated(keep='first')]
+                labels_series = labels_df.iloc[:, 0] if labels_df.shape[1] == 1 else labels_df
+                
+            except Exception:
+                # Si falla o el archivo no tiene identificadores, lo leemos sin cabecera ni índice
+                # y le asignamos directamente el orden de las muestras del archivo ómico base.
+                labels_df = pd.read_csv(labels_path, header=0)
+                if len(labels_df) != len(original_sample_order):
+                    raise ValueError(
+                        f"El número de filas en el archivo de labels ({len(labels_df)}) "
+                        f"no coincide con el número de muestras ómicas ({len(original_sample_order)})."
+                    )
+                # Asignar los identificadores de la ómica base como índice del vector de etiquetas
+                labels_series = pd.Series(labels_df.iloc[:, 0].values, index=original_sample_order)
+
+            sample_sets.append(set(labels_series.index))
+            print(f"[Labels] Etiquetas de clasificación cargadas exitosamente: {len(labels_series)} registros.")
+        else:
+            raise FileNotFoundError(f"El modo es 'classification', pero no se encontró un archivo de etiquetas válido en {data_dir}.")
+
+    # --- 4. Intersección de Muestras Comunes ---
+    print("\n=== 2. Intersección de Muestras Comunes ===")
+    common_samples = sorted(list(set.intersection(*sample_sets)))
+    print(f"Total de pacientes comunes alineados: {len(common_samples)}")
+
+    if len(common_samples) == 0:
+        raise ValueError("No se encontraron muestras comunes entre los archivos. Revisa el formato de los IDs.")
+
+    # --- 5. Filtrar y Ordenar Matrices y Metadatos ---
+    aligned_omics = {}
+    for omic_name, df in raw_omics.items():
+        df_aligned = df.loc[common_samples].copy()
+        if impute_missing and df_aligned.isnull().sum().sum() > 0:
+            df_aligned = df_aligned.fillna(df_aligned.mean()).fillna(0)
+        aligned_omics[omic_name] = df_aligned
+
+    aligned_surv = surv_df.loc[common_samples].copy() if surv_df is not None else None
+    aligned_labels = labels_series.loc[common_samples].copy() if labels_series is not None else None
+
+    print("\n=== Procesamiento Completado ===")
+    for omic_name, df in aligned_omics.items():
+        print(f"Matriz Final {omic_name}: {df.shape}")
+
+    return aligned_omics, aligned_surv, aligned_labels
+
+if __name__ == "__main__":
+    
+    # -- carga datos multiómicos --
+    omics, surv, y_labels = load_multiomics(
+        data_dir="data/MLOmics/Main_Dataset/Classification_datasets/GS-COAD/Original",
+        dataset_prefix="COAD",
+        task_type="classification",
+        labels_file="COAD_label_num.csv" # Opcional si sigue la convención y se llama igual
+    )
+    
+    # TODO: armar MuData con los 4 bloques ómicos y los metadatos
+
+
+    # -- paletas de colores bloques ómicos y etiquetas (subtipos CMS) --
+    block_colors = {
+        "CNV":   "#8E44AD",  # púrpura
+        "mRNA":  "#27AE60",  # verde
+        "Methy": "#F39C12",  # ámbar
+        "miRNA": "#E74C3C",  # rojo
+    }
+    groups_colors = {
+        0: "#3498DB",  # CMS1 (MSI/Immune)
+        1: "#E67E22",  # CMS2 (Canonical)
+        2: "#2ECC71",  # CMS3 (Metabolic)
+        3: "#9B59B6",  # CMS4 (Mesenchymal)
+    }
+
+    # -- pca para cada bloque ómico (exploración) --
+    print("=== Aplicando PCA a cada bloque ómico para exploración de datos ===")
+    os.makedirs("results/ml_omics/pca", exist_ok=True)
+    metadata_df = pd.DataFrame({'Subtype': y_labels})
+
+    # -- PCA bloque CNV --
+    pca_cnv = NipalsPCA(n_components=2)
+    pca_cnv.fit_transform(omics["CNV"], y_labels) # bloque CNV
+    
+    fig, ax = plot_pca(
+        model=pca_cnv, 
+        metadata=metadata_df, 
+        hue="Subtype",
+        palette=groups_colors,
+        title="PCA CNV"
+    )
+    fig.savefig("results/ml_omics/pca/pca_CNV.png", dpi=300, bbox_inches="tight")
+    plt.close(fig)
+    
+    # -- PCA bloque mRNA --
+    pca_mrna = NipalsPCA(n_components=2)
+    pca_mrna.fit_transform(omics["mRNA"], y_labels) # bloque mRNA
+
+    fig, ax = plot_pca(
+        model=pca_mrna,
+        metadata=metadata_df,
+        hue="Subtype",
+        palette=groups_colors,
+        title="PCA mRNA"
+    )
+    fig.savefig("results/ml_omics/pca/pca_mRNA.png", dpi=300, bbox_inches="tight")
+    plt.close(fig)
+
+    # -- PCA bloque Methy --
+    pca_methy = NipalsPCA(n_components=2)
+    pca_methy.fit_transform(omics["Methy"], y_labels) # bloque Methy
+
+    fig, ax = plot_pca(
+        model=pca_methy,
+        metadata=metadata_df,
+        hue="Subtype",
+        palette=groups_colors,
+        title="PCA Methy"
+    )
+    fig.savefig("results/ml_omics/pca/pca_Methy.png", dpi=300, bbox_inches="tight")
+    plt.close(fig)
+
+    # -- PCA bloque miRNA --
+    pca_mirna = NipalsPCA(n_components=2)
+    pca_mirna.fit_transform(omics["miRNA"], y_labels) # bloque miRNA
+
+    fig, ax = plot_pca(
+        model=pca_mirna,
+        metadata=metadata_df,
+        hue="Subtype",
+        palette=groups_colors,
+        title="PCA miRNA"
+    )
+    fig.savefig("results/ml_omics/pca/pca_miRNA.png", dpi=300, bbox_inches="tight")
+    plt.close(fig)
+
+
+    # -- DIABLO multiómico --
+    print("=== Aplicando DIABLO para integración multiómica y selección de biomarcadores ===")
+    design_matrix = np.full((4, 4), 0.1) # matriz de diseño 4 bloques
+    diablo_model = DIABLOWrapper(
+        n_components=2,
+        design=design_matrix,
+        keepX={
+            "CNV": [30, 30],
+            "mRNA": [30, 30],
+            "Methy": [30, 30],
+            "miRNA": [30, 30]
+        }
+    )
+    diablo_model.fit(X_dict=omics, Y=y_labels)
+    print("=== DIABLO multiómico completado ===")
+    
+    # -- guardar biomarcadores seleccionados por DIABLO --
+    os.makedirs("results/ml_omics/tables", exist_ok=True)
+
+    biomarkers_cnv = diablo_model.get_biomarkers(block='CNV', comp=1)
+    biomarkers_mrna= diablo_model.get_biomarkers(block='mRNA', comp=1)
+    biomarkers_methy = diablo_model.get_biomarkers(block='Methy', comp=1)
+    biomarkers_mirna = diablo_model.get_biomarkers(block='miRNA', comp=1)
+
+    biomarkers_cnv.to_csv("results/ml_omics/tables/biomarcadores_CNV_Python.csv")
+    biomarkers_mrna.to_csv("results/ml_omics/tables/biomarcadores_mRNA_Python.csv")
+    biomarkers_methy.to_csv("results/ml_omics/tables/biomarcadores_Methy_Python.csv")
+    biomarkers_mirna.to_csv("results/ml_omics/tables/biomarcadores_miRNA_Python.csv")
+    print("=== Biomarcadores seleccionados por DIABLO guardados en CSV ===")
+
+    scores = diablo_model.transform(diablo_model.X_dict_)
+
+    # -- visualizaciones --
+    os.makedirs("results/ml_omics/diablo", exist_ok=True)
+    
+    # -- circos plot --
+    fig, ax = plot_circos(
+        model=diablo_model,
+        cutoff=0.7,
+        block_colors=block_colors,
+        group_colors=groups_colors,
+        title="DIABLO Circos Plot",
+    )
+    fig.savefig("results/ml_omics/diablo/diablo_circos.png", dpi=300, bbox_inches="tight")
+    plt.close(fig)
+
+    # -- heatmap --
+    grid_cim = plot_cim(
+        model=diablo_model,
+        components=[1],
+        show_sample_names=False,
+        show_var_names=False,
+        block_colors=block_colors,
+        group_colors=groups_colors,
+        title="DIABLO CIM Heatmap",
+    )
+    grid_cim.savefig("results/ml_omics/diablo/diablo_cim.png", dpi=300, bbox_inches="tight")
+    
+    # -- red de correlaciones --
+    fig, ax = plot_network(
+        model=diablo_model,
+        cutoff=0.7,
+        block_colors=block_colors,
+        group_colors=groups_colors,
+        link_colors=('#CE671C', '#343434'),
+        title="DIABLO Relevance Network"
+    )
+    fig.savefig("results/ml_omics/diablo/diablo_network.png", dpi=300, bbox_inches="tight")
+    plt.close(fig)
+
+    # -- gráfico de biomarcadores --
+    fig, axes = plot_biomarkers(
+        model=diablo_model,
+        block_colors=block_colors,
+        top_n=30,
+        title="DIABLO Selected Biomarkers"
+    )
+    fig.savefig("results/ml_omics/diablo/diablo_biomarkers.png", dpi=300, bbox_inches="tight")
+    plt.close(fig)

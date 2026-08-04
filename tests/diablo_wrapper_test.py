@@ -1,4 +1,4 @@
-# Ejecución: python -m pytest -s tests/diablo_test.py
+# Ejecución: python -m pytest -s tests/diablo_wrapper_test.py
 
 import numpy as np
 import pytest
@@ -11,8 +11,7 @@ from rpy2.robjects import FloatVector, StrVector
 from rpy2.robjects import pandas2ri
 from rpy2.robjects.packages import importr, PackageNotInstalledError
 
-from methods.diablo_wrapper import DIABLOWrapper  # Ajusta la ruta según la ubicación de tu clase
-
+from pythomics.models.diablo_wrapper import DIABLOWrapper
 
 # ---------------------------------------------------------------------
 # Salta todo el módulo si mixOmics no está disponible en el R instalado

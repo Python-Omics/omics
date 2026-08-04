@@ -6,7 +6,7 @@ import rpy2.robjects as robjects
 from rpy2.robjects import FloatVector, r
 from sklearn.preprocessing import StandardScaler
 
-from methods.pca import NipalsPCA
+from pythomics.tools import NipalsPCA
 #from sklearn.decomposition import PCA
 
 def test_pca_variance_matches_r():
