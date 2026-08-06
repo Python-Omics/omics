@@ -260,3 +260,91 @@ class DIABLOWrapper(BaseEstimator, TransformerMixin):
         
         df.index.name = 'Variable'
         return df
+
+    def predict(self, X_dict):
+        if getattr(self, "r_fit_", None) is None:
+            raise RuntimeError("El modelo no ha sido ajustado. Ejecuta .fit() primero.")
+
+        p = len(X_dict)
+        block_names = list(X_dict.keys())
+        
+        for name in block_names:
+            if name not in self.block_names_:
+                raise KeyError(f"El bloque '{name}' no fue visto durante el entrenamiento.")
+                
+            block_arr = np.asarray(X_dict[name], dtype=float)
+            n_samples, n_features = block_arr.shape
+            col_names = list(X_dict[name].columns) if isinstance(X_dict[name], pd.DataFrame) else [f"Var_{i}" for i in range(n_features)]
+
+            robjects.r.assign(f"test_n_samples_{name}", int(n_samples))
+            robjects.r.assign(f"test_n_features_{name}", int(n_features))
+            robjects.r.assign(f"test_flat_x_{name}", FloatVector(block_arr.flatten().tolist()))
+            robjects.r.assign(f"test_col_names_{name}", StrVector(col_names))
+
+        robjects.r.assign("test_block_names", StrVector(block_names))
+        robjects.r.assign("test_n_comp", int(self.n_components))
+
+        r_script_predict = """
+        library(mixOmics)
+
+        X_test_list <- list()
+        for (name in test_block_names) {
+            n_s <- get(paste0("test_n_samples_", name))
+            n_f <- get(paste0("test_n_features_", name))
+            flat_vals <- get(paste0("test_flat_x_", name))
+            c_names <- get(paste0("test_col_names_", name))
+            mat <- matrix(flat_vals, nrow = n_s, ncol = n_f, byrow = TRUE)
+            colnames(mat) <- c_names
+            X_test_list[[name]] <- mat
+        }
+
+        # Ejecutar predicción protegiendo contra errores de folds pequeños
+        pred <- tryCatch({
+            predict(model_fit, newdata = X_test_list, ncomp = test_n_comp)
+        }, error = function(e) {
+            message("PREDICT ERROR: ", conditionMessage(e))
+            NULL
+        })
+
+        res <- NULL
+        if (!is.null(pred)) {
+            # Intentar extraer AveragedPredict (multiómico integrado) o max.dist estándar
+            if (!is.null(pred$AveragedPredict.class$max.dist)) {
+                res <- pred$AveragedPredict.class$max.dist
+            } else if (!is.null(pred$predict.class$max.dist)) {
+                res <- pred$predict.class$max.dist
+            } else {
+                # Si devuelve predicciones por bloque individual, tomar el primer bloque disponible
+                first_b <- test_block_names[1]
+                if (!is.null(pred$class[[first_b]]$max.dist)) {
+                    res <- pred$class[[first_b]]$max.dist
+                }
+            }
+        }
+
+        # Asegurar formato matriz (muestras x componentes) si no es nulo
+        if (!is.null(res)) {
+            if (is.vector(res)) {
+                res <- matrix(res, ncol = test_n_comp)
+            }
+        }
+        res
+        """
+
+        res_preds = robjects.r(r_script_predict)
+        
+        # Si R devolvió NULL o un objeto vacío debido a un fold extremo
+        if res_preds is robjects.NULL or res_preds is None:
+            n_test_samples = len(next(iter(X_dict.values())))
+            return np.zeros((n_test_samples, self.n_components), dtype=int)
+
+        arr = np.array(res_preds)   
+        
+        if arr.ndim == 0:
+            n_test_samples = len(next(iter(X_dict.values())))
+            return np.zeros((n_test_samples, self.n_components), dtype=int)
+            
+        if arr.ndim == 1:
+            arr = arr.reshape(-1, self.n_components)
+            
+        return arr

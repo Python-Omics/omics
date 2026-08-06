@@ -10,6 +10,7 @@ import mudata as md
 from pythomics.models import DIABLOWrapper
 from pythomics.tools import NipalsPCA
 from pythomics.visualizations import plot_pca, plot_circos, plot_cim, plot_network, plot_biomarkers
+from pythomics.tools.perf import Perf
 
 def clean_tcga_barcode(barcode: str, length: int = 12) -> str:
     """Estandariza los identificadores de muestras de TCGA."""
@@ -163,7 +164,7 @@ if __name__ == "__main__":
     
     # -- carga datos multiómicos --
     omics, surv, y_labels = load_multiomics(
-        data_dir="data/MLOmics/Main_Dataset/Classification_datasets/GS-COAD/Original",
+        data_dir="data/MLOmics/Classification_datasets/GS-COAD/Original",
         dataset_prefix="COAD",
         task_type="classification",
         labels_file="COAD_label_num.csv" # Opcional si sigue la convención y se llama igual
@@ -287,6 +288,20 @@ if __name__ == "__main__":
     )
     diablo_model.fit()
     print("=== DIABLO multiómico completado ===")
+
+    # -- Métricas de evaluación
+    perf_engine = Perf(
+        model_class=DIABLOWrapper,
+        model_params={"n_components": 2},
+        folds=5,
+        nrepeat=10
+    )
+
+    matrices_dict = {name: adata.X for name, adata in mdata.mod.items()}
+    X_combined = np.hstack([mat.toarray() if hasattr(mat, "toarray") else mat for mat in matrices_dict.values()])
+    metricas_rendimiento = perf_engine.evaluate(matrices_dict, y_labels)
+    print("Error global por componente:", metricas_rendimiento["error_rate_overall"])
+
     
     # -- guardar biomarcadores seleccionados por DIABLO --
     os.makedirs("results/ml_omics/tables", exist_ok=True)
