@@ -1,6 +1,7 @@
 import numpy as np
 import pandas as pd
 from sklearn.base import BaseEstimator, TransformerMixin
+import uuid
 
 # Importaciones de rpy2
 import rpy2.robjects as robjects
@@ -15,6 +16,7 @@ class DIABLOWrapper(BaseEstimator, TransformerMixin):
         
         self.X_dict_ = None
         self.Y_ = None
+        self.r_model_var_ = f"model_fit_{uuid.uuid4().hex[:8]}"
 
     @classmethod
     def from_mudata(cls, mdata, target_col, **kwargs):
@@ -103,10 +105,8 @@ class DIABLOWrapper(BaseEstimator, TransformerMixin):
         r_script = f"""
         library(mixOmics)
 
-        # Reconstruir la matriz de diseño
         design_matrix <- matrix(flat_design, nrow = p_size, ncol = p_size)
 
-        # Reconstruir la lista de bloques X
         X_list <- list()
         for (name in block_names) {{
             n_s <- get(paste0("n_samples_", name))
@@ -118,11 +118,9 @@ class DIABLOWrapper(BaseEstimator, TransformerMixin):
             X_list[[name]] <- mat
         }}
 
-        # Convertir Y a factor
         Y_factor <- as.factor(flat_y)
 
-        # Ajustar block.splsda
-        model_fit <- block.splsda(
+        {self.r_model_var_} <- block.splsda(
             X = X_list,
             Y = Y_factor,
             ncomp = n_comp,
@@ -131,25 +129,26 @@ class DIABLOWrapper(BaseEstimator, TransformerMixin):
             near.zero.var = TRUE
         )
 
-        model_fit
+        {self.r_model_var_}
         """
-
         self.r_fit_ = robjects.r(r_script)
 
-        # -- extraer loadings y names/variates --
-        r_script_loadings = """
-        r_loadings <- model_fit$loadings
-        loadings_names <- names(r_loadings)
         
+
+        # -- extraer loadings y names/variates --
+        r_script_loadings = f"""
+        r_loadings <- {self.r_model_var_}$loadings
+        loadings_names <- names(r_loadings)
+
         loadings_list <- list()
-        for (name in loadings_names) {
-            if (!is.null(r_loadings[[name]])) {
+        for (name in loadings_names) {{
+            if (!is.null(r_loadings[[name]])) {{
                 mat <- r_loadings[[name]]
                 loadings_list[[name]] <- list(matrix = mat, names = rownames(mat))
-            }
-        }
+            }}
+        }}
         loadings_list
-        """
+            """
         res_loadings_r = robjects.r(r_script_loadings)
         available_loadings = list(res_loadings_r.names) if hasattr(res_loadings_r, 'names') else list(res_loadings_r.keys())
 
@@ -180,17 +179,16 @@ class DIABLOWrapper(BaseEstimator, TransformerMixin):
         # (DIABLO en transform usa los variates calculados del modelo ajustado, 
         # pero validamos que los nombres existan)
         
-        r_script = """
-        r_variates <- model_fit$variates
+        r_script = f"""
+        r_variates <- {self.r_model_var_}$variates
         variates_names <- names(r_variates)
-        
-        # Devolver una lista de los variates almacenados en el objeto ajustado
+
         variates_list <- list()
-        for (name in variates_names) {
-            if (!is.null(r_variates[[name]])) {
+        for (name in variates_names) {{
+            if (!is.null(r_variates[[name]])) {{
                 variates_list[[name]] <- r_variates[[name]]
-            }
-        }
+            }}
+        }}
         variates_list
         """
 
@@ -284,11 +282,11 @@ class DIABLOWrapper(BaseEstimator, TransformerMixin):
         robjects.r.assign("test_block_names", StrVector(block_names))
         robjects.r.assign("test_n_comp", int(self.n_components))
 
-        r_script_predict = """
+        r_script_predict = f"""
         library(mixOmics)
 
         X_test_list <- list()
-        for (name in test_block_names) {
+        for (name in test_block_names) {{
             n_s <- get(paste0("test_n_samples_", name))
             n_f <- get(paste0("test_n_features_", name))
             flat_vals <- get(paste0("test_flat_x_", name))
@@ -296,38 +294,34 @@ class DIABLOWrapper(BaseEstimator, TransformerMixin):
             mat <- matrix(flat_vals, nrow = n_s, ncol = n_f, byrow = TRUE)
             colnames(mat) <- c_names
             X_test_list[[name]] <- mat
-        }
+        }}
 
-        # Ejecutar predicción protegiendo contra errores de folds pequeños
-        pred <- tryCatch({
-            predict(model_fit, newdata = X_test_list, ncomp = test_n_comp)
-        }, error = function(e) {
+        pred <- tryCatch({{
+            predict({self.r_model_var_}, newdata = X_test_list, ncomp = test_n_comp)
+        }}, error = function(e) {{
             message("PREDICT ERROR: ", conditionMessage(e))
             NULL
-        })
+        }})
 
         res <- NULL
-        if (!is.null(pred)) {
-            # Intentar extraer AveragedPredict (multiómico integrado) o max.dist estándar
-            if (!is.null(pred$AveragedPredict.class$max.dist)) {
+        if (!is.null(pred)) {{
+            if (!is.null(pred$AveragedPredict.class$max.dist)) {{
                 res <- pred$AveragedPredict.class$max.dist
-            } else if (!is.null(pred$predict.class$max.dist)) {
+            }} else if (!is.null(pred$predict.class$max.dist)) {{
                 res <- pred$predict.class$max.dist
-            } else {
-                # Si devuelve predicciones por bloque individual, tomar el primer bloque disponible
+            }} else {{
                 first_b <- test_block_names[1]
-                if (!is.null(pred$class[[first_b]]$max.dist)) {
+                if (!is.null(pred$class[[first_b]]$max.dist)) {{
                     res <- pred$class[[first_b]]$max.dist
-                }
-            }
-        }
+                }}
+            }}
+        }}
 
-        # Asegurar formato matriz (muestras x componentes) si no es nulo
-        if (!is.null(res)) {
-            if (is.vector(res)) {
+        if (!is.null(res)) {{
+            if (is.vector(res)) {{
                 res <- matrix(res, ncol = test_n_comp)
-            }
-        }
+            }}
+        }}
         res
         """
 
