@@ -28,9 +28,7 @@ _venv/
 env/
 ENV/
 
-# -- Jupyter Notebooks y Exploración --
-.ipynb_checkpoints/
-*.ipynb
+
 
 # -- IDEs y Editores --
 .idea/
