@@ -6,8 +6,6 @@ basadas en: MixOmics/R/internal_mint.block_helpers.R
 Lista de faltantes:
 - initsvd
 - initialisation_by_svd
-- scale_function
-- mean_centering_per_study
 - soft
 - binary_search
 - soft_threshold
@@ -19,7 +17,7 @@ Lista de faltantes:
 """
 
 import numpy as np
-
+from dataclasses import dataclass
 
 def study_split(data, study, levels=None):
     """
@@ -80,7 +78,7 @@ def cov2(x, y=None, bias=False):
     (***divide por n en vez de n-1***)
 
     Return:
-    np.ndarray: (p, p) si y:is None; (p, q) si y:esta dado
+    np.ndarray: (p, p) si y is None; (p, q) si y esta dado
     """
     x = np.asarray(x, dtype=float)
     n = x.shape[0]
@@ -129,8 +127,7 @@ def pairwise_cov(x, y):
 
 def miscrossprod(x, y):
     """
-    Producto cruzado ignorando NaN
-    (sum(x*y, na.rm=TRUE) de R).
+    Producto cruzado ignorando NaN (sum(x*y, na.rm=TRUE) de R).
     """
     x = np.asarray(x, dtype=float).ravel()
     y = np.asarray(y, dtype=float).ravel()
@@ -211,7 +208,7 @@ def defl_select(yy, rr, nncomp, nn, nbloc, indY=None, mode="canonical",
     """
     Aplica la deflacion correspondiente a cada bloque segun el 'mode' del
     análisis:
-    - canonical: cada bloque (incluido Y) se defla independientemente
+    - canonical (default): cada bloque (incluido Y) se defla independientemente
       sobre su propia variate.
     - classic: el bloque Y NO se defla sobre su propia variate; los
       bloques X se deflan usando el promedio de las variates de los otros
@@ -285,3 +282,81 @@ def defl_select(yy, rr, nncomp, nn, nbloc, indY=None, mode="canonical",
             pdefl[q] = np.zeros(rr[q].shape[1])
 
     return resdefl, pdefl
+
+
+
+# -----------------------------------------------------
+# Clases para Resultados de Funciones:
+# scale_function returns ScaleResult
+# mean_centering_per_study returns MeanCenteringResult
+# -----------------------------------------------------
+
+@dataclass
+class ScaleResult:
+    data: np.ndarray # datos centrados (y escalados si scale=True)
+    mean: np.ndarray # media por columna (shape (p,))
+    sigma: np.ndarray # sd por columna (shape (p,)), o None si scale=False
+
+@dataclass
+class MeanCenteringResult:
+    data: np.ndarray # matriz concatenada, centrada/escalada por estudio, mismo orden de filas que el input
+    means: dict # {nivel_estudio: vector de medias (p,)}
+    sigmas: dict # {nivel_estudio: vector de sd (p,)} o {nivel_estudio: None} si scale=False
+    levels: list # niveles de estudio, en el orden usado
+
+
+def scale_function(temp, scale=True):
+    """
+    Centra (y opcionalmente escala a varianza 1) una matriz, ignorando NaN
+    columna por columna (colMeans(na.rm=TRUE) y matrixStats::colSds(na.rm=TRUE),
+    que es la sd muestral, ddof=1).
+    """
+    temp = np.asarray(temp, dtype=float)
+    mean_x = np.nanmean(temp, axis=0)
+    centered = temp - mean_x
+
+    if scale:
+        sqrt_sdx = np.nanstd(temp, axis=0, ddof=1)
+        zero_sd = sqrt_sdx == 0
+        with np.errstate(invalid="ignore", divide="ignore"):
+            data_scale = centered / sqrt_sdx
+        if np.any(zero_sd):
+            # Si alguna columna tiene sd=0 (varianza nula), se evita el NaN 
+            # resultante de dividir por 0 poniendo esa columna en 0 directamente.
+            data_scale[:, zero_sd] = 0.0
+    else:
+        sqrt_sdx = None
+        data_scale = centered
+
+    return ScaleResult(data=data_scale, mean=mean_x, sigma=sqrt_sdx)
+
+
+def mean_centering_per_study(data, study, scale):
+    """
+    Centra (y opcionalmente escala) los datos por estudio: cada nivel de
+    'study' se centra/escala usando su propia media/sd.
+
+    Param:
+    data: array-like, shape (n, p)
+    study: array-like, shape (n,)
+    scale: bool
+    Return:
+    MeanCenteringResult
+    """
+    data = np.asarray(data, dtype=float)
+    study = np.asarray(study)
+    n = data.shape[0]
+
+    levels = list(np.unique(study))
+    concat = np.empty_like(data)
+    means, sigmas = {}, {}
+
+    for lvl in levels:
+        mask = study == lvl
+        sub = data[mask]
+        res = scale_function(sub, scale=scale)
+        concat[mask] = res.data
+        means[lvl] = res.mean
+        sigmas[lvl] = res.sigma
+
+    return MeanCenteringResult(data=concat, means=means, sigmas=sigmas, levels=levels)
