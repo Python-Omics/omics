@@ -6,17 +6,12 @@ basadas en: MixOmics/R/internal_mint.block_helpers.R
 Lista de faltantes:
 - initsvd
 - initialisation_by_svd
-- soft
-- binary_search
-- soft_threshold
-- soft_thresholding_l1
-- rank
-- sparsity
 
 ***Fixear documentación + traducir + tests***
 """
 
 import numpy as np
+import warnings
 from dataclasses import dataclass
 
 def study_split(data, study, levels=None):
@@ -169,7 +164,7 @@ def deflation(X, y, misdata_q=False, is_na_A_q=None, ind_NA=None):
     y: array-like, shape (n,)
     misdata_q: bool; si el bloque X tiene datos faltantes
     is_na_A_q: np.ndarray booleano, shape (n, p), requerido si misdata_q=True;
-    mascara de NaN de X (se asume que los NaN de X YA fueron reemplazados por 0
+    mascara de NaN de X (se asume que los NaN de X ya fueron reemplazados por 0
     en X mismo, siguiendo la convencion de internal_mint.block.R)
     ind_NA: array-like de indices de columna con al menos un NaN, opcional
 
@@ -282,6 +277,117 @@ def defl_select(yy, rr, nncomp, nn, nbloc, indY=None, mode="canonical",
             pdefl[q] = np.zeros(rr[q].shape[1])
 
     return resdefl, pdefl
+
+def soft(x, d):
+    """
+    Operador de soft-thresholding (sign(x) * max(0, |x| - d).
+    """
+    x = np.asarray(x, dtype=float)
+    return np.sign(x) * np.maximum(0.0, np.abs(x) - d)
+
+def binary_search(argu, sumabs):
+    """
+    Binary Search que busca 'd' (umbral de soft-thresholding) tal
+    que la norma L1 del vector soft-thresholdeado y renormalizado 
+    a norma L2=1 sea igual a 'sumabs'.
+
+    Param:
+    argu: array-like; vector de loadings a penalizar
+    sumabs: float; restriccion de norma L1 objetivo (entre 1 y sqrt(len(argu)))
+
+    Return:
+    float: el umbral 'd' encontrado (0 si ya se cumple la restriccion sin penalizar)
+    """
+    argu = np.asarray(argu, dtype=float)
+
+    if norm2(argu) == 0 or np.sum(np.abs(argu / norm2(argu))) <= sumabs:
+        return 0.0
+
+    lam1 = 0.0
+    lam2 = np.max(np.abs(argu)) - 1e-5
+    iter_ = 1
+    while iter_ < 500:
+        su = soft(argu, (lam1 + lam2) / 2)
+        if np.sum(np.abs(su / norm2(su))) < sumabs:
+            lam2 = (lam1 + lam2) / 2
+        else:
+            lam1 = (lam1 + lam2) / 2
+        if (lam2 - lam1) < 1e-10:
+            return (lam1 + lam2) / 2
+        iter_ += 1
+
+    
+    warnings.warn("Didn't quite converge.")
+    return (lam1 + lam2) / 2
+
+def soft_threshold(x, sumabs=1.0):
+    """
+    Aplica soft-thresholding con el umbral que satisface la restriccion de norma L1 'sumabs'.
+    """
+    return soft(x, binary_search(x, sumabs))
+
+def soft_thresholding_l1(x, nx):
+    """
+    Pone a cero las 'nx' variables con menor valor absoluto en x, y encoge
+    las restantes hacia cero en la magnitud del mayor valor absoluto
+    eliminado.E
+
+    Param:
+    x: array-like; vector de loadings
+    nx: int; numero de variables a poner en cero (= len(x) - keepX)
+
+    Returns
+    np.ndarray: loadings penalizados
+    """
+    x = np.asarray(x, dtype=float).copy()
+
+    if nx > 0:
+        abs_a = np.abs(x)
+        rank_max = rank_max(abs_a)
+        select_feature = rank_max > nx
+        if not np.all(select_feature):
+            thresh = np.max(abs_a[~select_feature]) if np.any(~select_feature) else 0.0
+            x = np.where(select_feature, np.sign(x) * (abs_a - thresh), 0.0)
+
+    return x
+
+
+def rank_max(a):
+    """
+    rank(a, ties.method="max") de R: a los valores empatados se les
+    asigna el rango mas alto del grupo.
+    """
+    a = np.asarray(a, dtype=float)
+    order = np.argsort(a, kind="mergesort")
+    sorted_a = a[order]
+    n = len(a)
+    ranks_sorted = np.empty(n, dtype=float)
+    i = 0
+    while i < n:
+        j = i
+        while j + 1 < n and sorted_a[j + 1] == sorted_a[i]:
+            j += 1
+        # rango maximo del grupo empatado [i, j] es (j+1) en base-1
+        ranks_sorted[i:j + 1] = j + 1
+        i = j + 1
+    ranks = np.empty(n, dtype=float)
+    ranks[order] = ranks_sorted
+    return ranks
+
+def sparsity(loadings_a, keep_a=None, penalty=None):
+    """
+    Sparsity correspondiente segun se especifique keep_a (conteo) o
+    penalty (norma L1 continua). Si ambos son None, no hace nada.
+    """
+    loadings_a = np.asarray(loadings_a, dtype=float)
+
+    if keep_a is not None:
+        nx = len(loadings_a) - keep_a
+        loadings_a = soft_thresholding_l1(loadings_a, nx=nx)
+    elif penalty is not None:
+        loadings_a = soft_threshold(loadings_a, penalty)
+
+    return loadings_a
 
 
 
