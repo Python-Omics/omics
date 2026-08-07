@@ -3,6 +3,8 @@ Funciones Helpers para Mint.
 
 basadas en: MixOmics/R/internal_mint.block_helpers.R
 
+'indY' es 0-based aqui (en R es 1-based).
+
 Lista de faltantes:
 - initsvd
 - initialisation_by_svd
@@ -13,6 +15,7 @@ Lista de faltantes:
 import numpy as np
 import warnings
 from dataclasses import dataclass
+from scipy.sparse.linalg import svds, ArpackNoConvergence
 
 def study_split(data, study, levels=None):
     """
@@ -388,6 +391,132 @@ def sparsity(loadings_a, keep_a=None, penalty=None):
         loadings_a = soft_threshold(loadings_a, penalty)
 
     return loadings_a
+
+def top_singular_vectors(X, want_u, want_v):
+    """
+    Calcula el primer vector singular de X, usando el solver iterativo
+    truncado (svds) cuando la dimension relevante es grande (>3, igual que
+    el umbral de R), y SVD completo cuando es chica.
+
+    Param:
+    X : np.ndarray, shape (n, p)
+    want_u, want_v: bool; cuales vectores se necesitan (al menos uno debe ser True)
+
+    Return:
+    (u1, v1): cada uno np.ndarray o None si no se pidió
+    """
+    n, p = X.shape
+
+    if p > 3:
+        k = 1
+        try:
+            # svds no garantiza el signo ni que funcione con matrices casi
+            # singulares en todos los casos (si falla, se cae al SVD completo)
+            U, s, Vt = svds(X, k=k)
+            # svds no ordena los valores singulares de mayor a menor 
+            # (np.linalg.svd si); con k=1 no hace falta ordenar,
+            # pero se deja explícito ante k!=1
+            order = np.argsort(s)[::-1]
+            U, s, Vt = U[:, order], s[order], Vt[order, :]
+            u1 = U[:, 0] if want_u else None
+            v1 = Vt[0, :] if want_v else None
+            return u1, v1
+        except (ArpackNoConvergence, ValueError) as e:
+            warnings.warn(
+                f"svds no convergio para una matriz {X.shape} (p>3); "
+                f"Se procede a SVD completo. Detalle: {e}"
+            )
+
+    # SVD completo: (p<=3) o respaldo tras fallo de svds 
+    U, s, Vt = np.linalg.svd(X, full_matrices=False)
+    u1 = U[:, 0] if want_u else None
+    v1 = Vt[0, :] if want_v else None
+    return u1, v1
+
+
+def initsvd(X):
+    """
+    Primer vector singular de X. Devuelve v (el vector singular "de variables", 
+    shape (p,)) si n >= p; si no, devuelve u (el vector singular "de muestras",
+    shape (n,)).
+
+    Usa el solver truncado (scipy.sparse.linalg.svds) cuando p>3, 
+    (como rARPACK::svds de R)[top_singular_vectors]
+    """
+    X = np.asarray(X, dtype=float)
+    n, p = X.shape
+
+    if n >= p:
+        _, v1 = top_singular_vectors(X, want_u=False, want_v=True)
+        return v1
+    else:
+        u1, _ = top_singular_vectors(X, want_u=True, want_v=False)
+        return u1
+
+
+def initialisation_by_svd(A, indY=None, misdata=None, is_na_A=None, init="svd"):
+    """
+    Calcula los loadings iniciales de cada bloque antes de iniciar las
+    iteraciones del algoritmo. Dos modos:
+    - "svd": inicializacion conjunta. Para cada bloque X != Y, calcula el
+      primer vector singular de crossprod(X, Y) = X'Y; usa el vector
+      singular izquierdo (u) como loading inicial de X. El loading inicial
+      de Y se toma del vector singular derecho (v) del primer bloque no-Y
+      [Igual que en initsvd(), se usa el solver truncado cuando la matriz
+      crossprod(X,Y) tiene mas de 3 columnas.]
+
+    - "svd.single": inicializacion independiente por bloque, via initsvd().
+      Para bloques n >= p usa directamente ese vector singular como loading. 
+      Para bloques n < p trabaja en el espacio dual de tamaño n*n para evitar
+      formar matrices p*p, y despues proyecta de vuelta al espacio de variables
+      via crossprod(X, alpha).
+
+    Param:
+    A: list de np.ndarray; bloques de datos, uno por elemento
+    indY: int o None; indice 0-based del bloque Y (solo se usa si init="svd")
+    misdata, is_na_A: reservados para el manejo de NA (se usarán para cuando
+    esté el resto del código dx, x ahora solo existen)
+    init : {"svd", "svd.single"}
+
+    Return:
+    list de np.ndarray: loadings iniciales, uno por bloque
+    """
+    J = len(A)
+    loadings_A = [None] * J
+
+    if init == "svd":
+        if indY is None:
+            raise ValueError("indY es requerido cuando init='svd'.")
+
+        others = [x for x in range(J) if x != indY]
+        M = [A[x].T @ A[indY] for x in others]
+
+        first_v = None
+        for pos, x in enumerate(others):
+            u1, v1 = top_singular_vectors(M[pos], want_u=True, want_v=(pos == 0))
+            loadings_A[x] = u1
+            if pos == 0:
+                first_v = v1
+
+        loadings_A[indY] = first_v
+
+    elif init == "svd.single":
+        alpha = [initsvd(A[j]) for j in range(J)]
+
+        for j in range(J):
+            n_j, p_j = A[j].shape
+            if n_j >= p_j:
+                loadings_A[j] = alpha[j]
+            else:
+                a = alpha[j]
+                denom = np.sqrt(a @ A[j] @ (A[j].T @ a))
+                a = a / denom
+                loadings_A[j] = A[j].T @ a
+
+    else:
+        raise ValueError("init debe ser 'svd' o 'svd.single'.")
+
+    return loadings_A
 
 
 
