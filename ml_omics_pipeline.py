@@ -1,4 +1,8 @@
 import os
+from dotenv import load_dotenv
+
+load_dotenv()
+
 import matplotlib.pyplot as plt
 import pandas as pd
 import numpy as np
@@ -11,6 +15,8 @@ from pythomics.models import DIABLOWrapper
 from pythomics.tools import NipalsPCA
 from pythomics.visualizations import plot_pca, plot_circos, plot_cim, plot_network, plot_biomarkers
 from pythomics.tools.perf import Perf
+from pythomics.ai import BioAnnotator, BioLLM
+from pythomics.reports import BioReportPDF
 
 def clean_tcga_barcode(barcode: str, length: int = 12) -> str:
     """Estandariza los identificadores de muestras de TCGA."""
@@ -366,3 +372,37 @@ if __name__ == "__main__":
     )
     fig.savefig("results/ml_omics/diablo/diablo_biomarkers.png", dpi=300, bbox_inches="tight")
     plt.close(fig)
+
+
+    # -- prueba generación de reporte PDF --
+    print("=== Generando reporte PDF de biomarcadores seleccionados por DIABLO ===")
+    bio_annotator = BioAnnotator()
+    biomarkers_dfs= {
+        "CNV": biomarkers_cnv,
+        "mRNA": biomarkers_mrna,
+        "Methy": biomarkers_methy,
+        "miRNA": biomarkers_mirna
+    }
+
+    api_key = os.getenv("OPENROUTER_API_KEY")
+    if not api_key:
+        raise ValueError("OPENROUTER_API_KEY no está definida. Configúrala en el archivo .env")
+    llm_analyzer = BioLLM(
+        api_key=api_key,
+        provider="openrouter",
+        model="nemotron-3-ultra-550b-a55b:free"
+    )
+
+    report = BioReportPDF(title="Reporte de Integración Multiómica - TEST")
+    report.generate_biomarkers_report(
+        output_path="results/ml_omics/diablo/reporte_biomarcadores.pdf",
+        biomarkers_plot_path=[
+            "results/ml_omics/diablo/diablo_biomarkers.png",
+            "results/ml_omics/diablo/diablo_cim.png",
+            "results/ml_omics/diablo/diablo_circos.png",
+            "results/ml_omics/diablo/diablo_network.png"
+        ],
+        biomarkers_dfs=biomarkers_dfs,
+        annotator_instance=bio_annotator,
+        llm_instance=llm_analyzer
+    )

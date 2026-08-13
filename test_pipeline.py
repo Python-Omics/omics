@@ -13,7 +13,9 @@ from pydeseq2.ds import DeseqStats
 
 from pythomics.models import DIABLOWrapper
 from pythomics.tools import NipalsPCA
-from pythomics.visualizations import plot_circos, plot_cim, plot_volcano, plot_pca
+from pythomics.visualizations import plot_circos, plot_cim, plot_volcano, plot_pca, plot_biomarkers, plot_network
+from pythomics.ai import BioAnnotator
+from pythomics.reports import BioReportPDF
 
 md.set_options(pull_on_update=False) # quita advertencias de futuras versiones
 
@@ -331,8 +333,48 @@ if __name__ == "__main__":
         facecolor="white"
     )
     # ----------------------------------------------
+    fig, ax = plot_network(
+        model=diablo,
+        cutoff=0.7,
+        block_colors=block_colors,
+        group_colors=groups_colors,
+        title="DIABLO Network Plot"
+    )
+    fig.savefig(
+        "results/plots/network_plot.png",
+        dpi=300,
+        bbox_inches="tight",
+        facecolor="white"
+    )
+    # ----------------------------------------------
+    fig, ax = plot_biomarkers(
+        model=diablo,
+        block_colors=block_colors,
+        title="DIABLO Biomarkers Plot"
+    )
+    fig.savefig(
+        "results/plots/biomarkers_plot.png",
+        dpi=300,
+        bbox_inches="tight",
+        facecolor="white"
+    )
 
-    # plot_indiv()
 
-
-    plt.show()
+    # -- generación de report PDF de prueba --
+    bio_annotator = BioAnnotator()
+    report = BioReportPDF()
+    report.generate_biomarkers_report(
+        output_path="results/reporte_biomarcadores.pdf",
+        biomarkers_dfs={
+            'mRNA': biomarkers_arn,
+            'Proteinas': biomarkers_prot
+        },
+        biomarkers_plot_path=[
+            "results/plots/biomarkers_plot.png",
+            "results/plots/network_plot.png",
+            "results/plots/cim_plot.png",
+            "results/plots/circos_plot.png"
+        ],
+        annotator_instance=bio_annotator,
+        report_title="Reporte Integración Multiómica - TEST"
+    )

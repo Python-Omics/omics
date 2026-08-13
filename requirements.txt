@@ -11,3 +11,8 @@ pydeseq2
 pytest
 rpy2
 networkx
+biothings_client[dataframe]
+fpdf2
+requests
+openai
+python-dotenv

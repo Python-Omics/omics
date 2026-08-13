@@ -46,3 +46,8 @@ data/
 .pytest_cache/
 .coverage
 htmlcov/
+
+# -- Secretos y Variables de Entorno --
+.env
+.env.*
+!.env.example
