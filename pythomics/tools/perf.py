@@ -1,3 +1,5 @@
+import inspect
+
 import numpy as np
 from sklearn.model_selection import StratifiedKFold
 
@@ -19,7 +21,12 @@ class Perf:
         elif 'ncomp' in self.model_params:
             ncomp = self.model_params['ncomp']
         else:
-            raise ValueError("model_params debe incluir 'n_components' (o 'ncomp').")
+            params = inspect.signature(self.model_class.__init__).parameters
+            ncomp = params['ncomp'].default if 'ncomp' in params else None
+            if ncomp is None and 'n_components' in params:
+                ncomp = params['n_components'].default
+            if ncomp is None:
+                raise ValueError("model_params debe incluir 'n_components' (o 'ncomp').")
 
         error_rate_overall = np.zeros((self.nrepeat, ncomp))
         error_rate_ber = np.zeros((self.nrepeat, ncomp, num_classes))

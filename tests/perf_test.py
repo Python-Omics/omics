@@ -2,7 +2,7 @@
 Unit tests for the Perf class (perf.py).
 
 Run with:
-    pytest test_perf.py -v
+    pytest perf_test.py -v
 """
 import numpy as np
 import pytest
@@ -98,20 +98,10 @@ def test_perfect_predictions_give_zero_error_array_X():
     assert np.allclose(results["error_rate_overall"], 0.0)
 
 
-def test_dict_X_currently_raises_due_to_skf_split_bug():
+def test_dict_X_blocks_evaluate_without_error():
     """
-    DOCUMENTS A BUG: the implementation calls `skf.split(X, y)` with the raw
-    `X`. When `X` is a dict of blocks (the DIABLO multi-block case the
-    docstring explicitly says should be supported), sklearn's
-    StratifiedKFold treats the dict's number of *keys* as its sample count
-    (e.g. 2 blocks -> "2 samples"), which mismatches `len(y)` and raises a
-    ValueError before any fold is ever built.
-
-    A fix would be to always split on `np.arange(len(y))` and index into
-    whichever block(s) X actually is, e.g.:
-        skf.split(np.zeros(len(y)), y)
-    This test pins down the CURRENT (buggy) behavior so it's caught if the
-    implementation changes.
+    Verifica que X como dict de bloques (caso DIABLO multi-bloque) funciona:
+    evaluate() divide sobre índices de muestra (dummy_X), no sobre el dict.
     """
     X1, y = make_dataset(n_per_class=15, n_classes=3, n_features=4, seed=1)
     X2, _ = make_dataset(n_per_class=15, n_classes=3, n_features=6, seed=2)
@@ -125,11 +115,14 @@ def test_dict_X_currently_raises_due_to_skf_split_bug():
         nrepeat=2,
     )
 
-    with pytest.raises(ValueError, match="inconsistent numbers of samples"):
-        perf.evaluate(X_dict, y)
+    results = perf.evaluate(X_dict, y)
+
+    assert "error_rate_overall" in results
+    assert results["error_rate_overall"].shape == (1,)
+    assert np.allclose(results["error_rate_overall"], 0.0)
 
 
-def test_always_wrong_predictions_sum_across_folds():
+def test_always_wrong_predictions_give_full_error():
     X, y = make_dataset(n_per_class=10, n_classes=2)
     folds = 5
 
@@ -141,9 +134,9 @@ def test_always_wrong_predictions_sum_across_folds():
     )
     results = perf.evaluate(X, y)
 
-    # Every fold contributes an error rate of 1.0 (100% wrong), and folds
-    # are summed (not averaged) within a repetition, so we expect `folds`.
-    assert np.allclose(results["error_rate_overall"], float(folds))
+    # Every fold contributes an error rate of 1.0 (100% wrong); fold rates
+    # are averaged (not summed) within each repetition, so we expect 1.0.
+    assert np.allclose(results["error_rate_overall"], 1.0)
 
 def test_output_shape_matches_ncomp():
     X, y = make_dataset(n_per_class=12, n_classes=2)

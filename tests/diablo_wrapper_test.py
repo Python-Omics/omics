@@ -134,7 +134,7 @@ def test_transform_before_fit_raises(two_block_data):
 def test_get_params_returns_constructor_args():
     model = DIABLOWrapper(n_components=3, design=None)
     params = model.get_params()
-    assert params == {"n_components": 3, "design": None}
+    assert params == {"n_components": 3, "design": None, "keepX": None}
 
 
 def test_set_params_updates_state(two_block_data):
