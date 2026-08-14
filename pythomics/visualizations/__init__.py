@@ -5,7 +5,7 @@ from .scatter import plot_pca
 from .relevance_network import plot_network
 from .biomarkers import plot_biomarkers
 
-# se definen las funciones que se exponen al importar paquete
+# define the functions exposed when importing the package
 __all__ = [
     'plot_circos',
     'plot_cim',

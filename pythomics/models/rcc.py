@@ -5,9 +5,15 @@ A Python implementation based on the 'rcc' module from the mixOmics R package.
 Provides capabilities to perform RCC using both Ridge and Shrinkage regularization methods.
 
 """
-
 from dataclasses import dataclass
 from pythomics.models.rcc_utilities import *
+import logging
+
+logger = logging.getLogger(__name__)
+
+import logging
+
+logger = logging.getLogger(__name__)
 
 @dataclass
 class RCCResult:
@@ -78,12 +84,16 @@ def rcc(X, Y, ncomp=2, method="ridge", lambda1=0.0, lambda2=0.0):
     if ncomp > min(p, q):
         raise ValueError(f"'ncomp' must be between 1 and {min(p, q)}.")
 
+    logger.info(f"Running rcc | method: {method} | ncomp: {ncomp} | X: {n}x{p} | Y: {n}x{q}")
+
     x_names = [f"X{i + 1}" for i in range(p)]
     y_names = [f"Y{i + 1}" for i in range(q)]
 
     if method == "ridge":
         if lambda1 < 0 or lambda2 < 0:
                 raise ValueError("lambda1 and lambda2 must be non-negative.")
+
+        logger.debug(f"Ridge covariance estimation (lambda1={lambda1}, lambda2={lambda2})")
 
         # pairwise-complete covariances (equivalent to var()/cov(..., use="pairwise") in R)
         Cxx = cov_pairwise(X) + lambda1 * np.eye(p)
@@ -99,6 +109,10 @@ def rcc(X, Y, ncomp=2, method="ridge", lambda1=0.0, lambda2=0.0):
  
         # input lambdas are replaced by estimated lambdas
         lambda1, lambda2 = lambda_x, lambda_y
+        logger.info(f"Shrinkage-estimated lambdas: lambda1={lambda1:.4f}, lambda2={lambda2:.4f}")
+
+    if np.any(np.isnan(Cxx)) or np.any(np.isnan(Cyy)):
+        logger.warning("NaN values detected in covariance matrices (insufficient pairwise observations); Cholesky may fail.")
 
     # --- Cholesky factorization ---
     # R uses chol() -> UPPER triangular Rx such that Rx' Rx = Cxx.
@@ -128,6 +142,8 @@ def rcc(X, Y, ncomp=2, method="ridge", lambda1=0.0, lambda2=0.0):
         xcoef = Lx_inv.T @ v2
         ycoef = Ly_inv.T @ u2
 
+    logger.info(f"Canonical correlations: {np.round(cor[:ncomp], 4)}")
+
     Xc = X - np.nanmean(X, axis=0)
     Yc = Y - np.nanmean(Y, axis=0)
     Xc = np.where(np.isnan(Xc), 0.0, Xc)
@@ -138,6 +154,9 @@ def rcc(X, Y, ncomp=2, method="ridge", lambda1=0.0, lambda2=0.0):
 
     prop_expl_var_x = explained_variance(X, variates_x, ncomp)
     prop_expl_var_y = explained_variance(Y, variates_y, ncomp)
+
+    logger.debug(f"Proportion of explained variance | X: {np.round(prop_expl_var_x, 4)} | Y: {np.round(prop_expl_var_y, 4)}")
+    logger.info("rcc completed.")
 
     return RCCResult(
         cor=cor,

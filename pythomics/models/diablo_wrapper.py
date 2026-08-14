@@ -2,10 +2,13 @@ import numpy as np
 import pandas as pd
 from sklearn.base import BaseEstimator, TransformerMixin
 import uuid
+import logging
 
-# Importaciones de rpy2
+# rpy2 imports
 import rpy2.robjects as robjects
 from rpy2.robjects import FloatVector, StrVector, IntVector
+
+logger = logging.getLogger(__name__)
 
 
 class DIABLOWrapper(BaseEstimator, TransformerMixin):
@@ -21,23 +24,24 @@ class DIABLOWrapper(BaseEstimator, TransformerMixin):
     @classmethod
     def from_mudata(cls, mdata, target_col, **kwargs):
         """
-        Extrae los bloques de datos de un objeto MuData y devuelve una instancia de DIABLOWrapper
+        Extracts the data blocks from a MuData object and returns a DIABLOWrapper instance
         """
-        # -- se extraen las matrices/bloques de MuData --
+        logger.info(f"Creating model instance from MuData with target_col='{target_col}'")
+        # -- extract the data matrices/blocks from MuData --
         X_dict = {name: mod.to_df() for name, mod in mdata.mod.items()}
         
-        # -- se extrae Y --
-        # NOTE: se intenta obtener Y desde mdata.obs[target_col],
-        # pero si no está se accede a la primera modalidad y se extra de ahí
+        # -- extract Y --
+        # NOTE: try to obtain Y from mdata.obs[target_col],
+        # but if not present, fall back to the first modality and extract it from there
         try:
             Y = mdata.obs[target_col]
         except KeyError:
-            # Obtenemos la primera modalidad (ej. 'mRNA')
+            # Obtain the first modality (e.g. 'mRNA')
             first_mod_name = list(mdata.mod.keys())[0]
             Y = mdata.mod[first_mod_name].obs[target_col]
-            print(f"DEBUG: 'Temporada' no encontrada en mdata.obs. Obtenida desde {first_mod_name}.obs")
+            logger.warning(f"'{target_col}' not found in mdata.obs. Obtained from {first_mod_name}.obs")
         
-        # -- creación de instancia --
+        # -- create instance --
         instance = cls(**kwargs)
         instance.X_dict_ = X_dict
         instance.Y_ = Y
@@ -45,12 +49,13 @@ class DIABLOWrapper(BaseEstimator, TransformerMixin):
         return instance
 
     def fit(self, X_dict=None, Y=None):
-        # NOTE: si no se pasan X_dict e Y, es porque se construyó desde MuData y ya están guardados en la instancia
+        logger.info("Fitting DIABLO model...")
+        # NOTE: if X_dict and Y are not passed, the model was built from MuData and they are already stored in the instance
         X_dict = X_dict if X_dict is not None else self.X_dict_
         Y = Y if Y is not None else self.Y_
         
         if X_dict is None or Y is None:
-            raise ValueError("Se debe proporcionar X_dict e Y, o inicializar desde MuData.")
+            raise ValueError("X_dict and Y must be provided, or the model must be initialized from MuData.")
         
 
         self.block_names_ = list(X_dict.keys())
@@ -63,23 +68,23 @@ class DIABLOWrapper(BaseEstimator, TransformerMixin):
 
         if design_mat.shape != (p, p):
             raise ValueError(
-                f"design debe tener forma ({p}, {p}), recibido "
+                f"design must have shape ({p}, {p}), received "
                 f"{design_mat.shape}"
             )
 
-        # Preparar Y asegurando que sea una lista de strings limpia
+        # Prepare Y ensuring it is a clean list of strings
         y_values = pd.Series(Y).astype(str).tolist()
 
-        # Asignar variables globales a R
+        # Assign global variables to R
         robjects.r.assign("n_comp", int(self.n_components))
         robjects.r.assign("flat_y", StrVector(y_values))
         
-        # Asignar la matriz de diseño aplanada
+        # Assign the flattened design matrix
         design_flat = design_mat.flatten(order='F')
         robjects.r.assign("flat_design", FloatVector(design_flat.tolist()))
         robjects.r.assign("p_size", p)
 
-        # Asignar cada bloque de X convirtiéndolo a formato plano con sus dimensiones
+        # Assign each X block converting it to flat format with its dimensions
         block_names = list(X_dict.keys())
         robjects.r.assign("block_names", StrVector(block_names))
 
@@ -93,15 +98,19 @@ class DIABLOWrapper(BaseEstimator, TransformerMixin):
             robjects.r.assign(f"n_features_{name}", int(n_features))
             robjects.r.assign(f"flat_x_{name}", FloatVector(block_arr.flatten().tolist()))
             robjects.r.assign(f"col_names_{name}", StrVector(col_names))
+            logger.debug(f"Block '{name}': {n_samples} samples x {n_features} features")
         
-        # -- traduccion de keepX a lista de R --
+        # -- translate keepX to an R list --
         if self.keepX is not None:
-            # ej: list('mRNA'=c(20,20), 'Proteinas'=c(20,20))
+            # e.g. list('mRNA'=c(20,20), 'Proteinas'=c(20,20))
             keepX_str = "list(" + ", ".join([f"'{k}'=c({','.join(map(str, v))})" for k, v in self.keepX.items()]) + ")"
         else:
             keepX_str = "NULL"
 
-        # Script de R para armar los bloques, el diseño y ajustar block.splsda
+        logger.info(f"Blocks: {len(block_names)}; samples: {X_dict[block_names[0]].shape[0]}; features per block: {[X_dict[name].shape[1] for name in block_names]}")
+        
+        logger.info("Running DIABLO (block.splsda) in R...")
+        # R script to build the blocks, the design, and fit block.splsda
         r_script = f"""
         library(mixOmics)
 
@@ -135,7 +144,7 @@ class DIABLOWrapper(BaseEstimator, TransformerMixin):
 
         
 
-        # -- extraer loadings y names/variates --
+        # -- extract loadings and names/variates --
         r_script_loadings = f"""
         r_loadings <- {self.r_model_var_}$loadings
         loadings_names <- names(r_loadings)
@@ -167,17 +176,21 @@ class DIABLOWrapper(BaseEstimator, TransformerMixin):
         self.X_dict_ = X_dict
         self.Y_ = Y
         
+        logger.info(f"Loadings extracted for {len(self.loadings_)} blocks.")
+
         return self
 
     def transform(self, X_dict):
         if getattr(self, "r_fit_", None) is None:
             raise RuntimeError(
-                "El modelo no ha sido ajustado. Ejecuta .fit() primero."
+                "The model has not been fitted. Run .fit() first."
             )
+        logger.info(f"Extracting variates from {len(X_dict)} blocks...")
 
-        # Validar si los bloques de entrada coinciden con los guardados o están en el modelo
-        # (DIABLO en transform usa los variates calculados del modelo ajustado, 
-        # pero validamos que los nombres existan)
+
+        # Validate whether the input blocks match the stored ones or are in the model
+        # (DIABLO in transform uses the variates computed from the fitted model, 
+        # but we validate that the names exist)
         
         r_script = f"""
         r_variates <- {self.r_model_var_}$variates
@@ -194,15 +207,15 @@ class DIABLOWrapper(BaseEstimator, TransformerMixin):
 
         res_r = robjects.r(r_script)
         
-        # Extraer los nombres disponibles en R
+        # Extract the names available in R
         available_names = list(res_r.names) if hasattr(res_r, 'names') else list(res_r.keys())
 
         variates_dict = {}
         for name in X_dict.keys():
             if name not in available_names:
                 raise KeyError(
-                    f"El bloque '{name}' no está presente en el "
-                    f"modelo ajustado. Bloques disponibles: {available_names}"
+                    f"The block '{name}' is not present in the "
+                    f"fitted model. Available blocks: {available_names}"
                 )
             r_matrix = res_r.rx2(name)
             variates_dict[name] = np.array(r_matrix)
@@ -212,10 +225,10 @@ class DIABLOWrapper(BaseEstimator, TransformerMixin):
     def fit_transform(self, X_dict, Y):
         return self.fit(X_dict, Y).transform(X_dict)
 
-    # se añade temporalmente para satisfacer al plot_circos()
+    # temporarily added to satisfy plot_circos()
     def get_expression_means(self, active_features, groups):
         """
-        Calcula las medias de expresión crudas por grupo
+        Computes raw expression means per group
         """
         group_means = {}
         blocks = list(active_features.keys())
@@ -236,21 +249,24 @@ class DIABLOWrapper(BaseEstimator, TransformerMixin):
 
     def get_biomarkers(self, block, comp=1):
         """
-        Extrae las variables biomarcadoras seleccionadas para un bloque y componente específico
+        Extracts the biomarker variables selected for a specific block and component
         """
         if getattr(self, "loadings_", None) is None:
-            raise RuntimeError("El modelo no ha sido ajustado.")
+            raise RuntimeError("The model has not been fitted.")
+        
+        logger.info(f"Extracting biomarkers for block '{block}' (comp {comp})")
 
-        # se extraen los loadings del componente especificado
+
+        # extract the loadings of the specified component
         loadings = self.loadings_[block][:, comp - 1]
         names = np.array(self.names_[block])
 
-        # se filtran las variables que sobrevivieron a keepX
+        # filter the variables that survived keepX
         active_mask = loadings != 0
         active_loadings = loadings[active_mask]
         active_names = names[active_mask]
 
-        # se ordenan por valor absoluto de loading
+        # sort by absolute loading value
         sort_idx = np.argsort(np.abs(active_loadings))[::-1]
         df = pd.DataFrame({
             'value': active_loadings[sort_idx]
@@ -261,14 +277,17 @@ class DIABLOWrapper(BaseEstimator, TransformerMixin):
 
     def predict(self, X_dict):
         if getattr(self, "r_fit_", None) is None:
-            raise RuntimeError("El modelo no ha sido ajustado. Ejecuta .fit() primero.")
+            raise RuntimeError("The model has not been fitted. Run .fit() first.")
+
+        logger.info(f"Making predictions with {len(X_dict)} blocks (n_comp={self.n_components})...")
+
 
         p = len(X_dict)
         block_names = list(X_dict.keys())
         
         for name in block_names:
             if name not in self.block_names_:
-                raise KeyError(f"El bloque '{name}' no fue visto durante el entrenamiento.")
+                raise KeyError(f"The block '{name}' was not seen during training.")
                 
             block_arr = np.asarray(X_dict[name], dtype=float)
             n_samples, n_features = block_arr.shape
@@ -327,14 +346,16 @@ class DIABLOWrapper(BaseEstimator, TransformerMixin):
 
         res_preds = robjects.r(r_script_predict)
         
-        # Si R devolvió NULL o un objeto vacío debido a un fold extremo
+        # If R returned NULL or an empty object due to an extreme fold
         if res_preds is robjects.NULL or res_preds is None:
+            logger.warning("R returned NULL in predict (possible extreme fold); generating zeros fallback.")
             n_test_samples = len(next(iter(X_dict.values())))
             return np.zeros((n_test_samples, self.n_components), dtype=int)
 
         arr = np.array(res_preds)   
         
         if arr.ndim == 0:
+            logger.warning("R returned an empty scalar prediction in predict; generating zeros fallback.")
             n_test_samples = len(next(iter(X_dict.values())))
             return np.zeros((n_test_samples, self.n_components), dtype=int)
             

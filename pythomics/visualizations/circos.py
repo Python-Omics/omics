@@ -1,5 +1,5 @@
 """
-Implementación circosPlot
+circosPlot implementation
 
 
 ...
@@ -9,10 +9,13 @@ import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.lines as mlines
 import pycirclize
+import logging
+
+logger = logging.getLogger(__name__)
 
 def get_cross_corr(X, T):
     """
-    Calcula correlación de Pearson entre columnas de X y columnas de T
+    Calculates Pearson correlation between the columns of X and the columns of T
     """
     X_std = (X - X.mean(axis=0)) / (X.std(axis=0) + 1e-8)
     T_std = (T - T.mean(axis=0)) / (T.std(axis=0) + 1e-8)
@@ -32,44 +35,46 @@ def plot_circos(
     ax=None
 ):
     """
-    Genera un circos plot a partir de un modelo entrenado de pythomics.
+    Generates a circos plot from a trained pythomics model.
 
-    Params:
-    model: objeto pythomics.models
-        modelo entrenado...
+    Parameters:
+    model: pythomics.models object
+        trained model...
     cutoff: float
-        umbral de correlación para mostrar links
+        correlation threshold to show links
     components: int/tuple
-        componentes a mostrar en el plot
+        components to show in the plot
     block_colors: dict
-        diccionario que mapea nombre de bloque a color (hexadecimal o nombre de color de matplotlib).
-        La cantidad de colores debe ser igual a la cantidad de bloques en el modelo.
+        dictionary mapping block name to color (hexadecimal or matplotlib color name).
+        The number of colors must match the number of blocks in the model.
     group_colors: dict
-        diccionario que mapea nombre de grupo a color (hexadecimal o nombre de color de matplotlib).
+        dictionary mapping group name to color (hexadecimal or matplotlib color name).
     link_colors: tuple
-        colores para los links (positivo, negativo)
+        colors for the links (positive, negative)
     show_intra_links: bool
-        si True, plotea links entre variables pertenecientes al mismo bloque.
-        si False, solo plotea links entre bloques diferentes (multiómicas)
+        if True, plots links between variables belonging to the same block.
+        if False, only plots links between different blocks (multi-omics)
     show_var_names: bool
-        si True, muestra nombres de etiquetas en borde de círculo
+        if True, shows label names on the circle edge
     title: str
-        título plot
+        plot title
     figsize: tuple
-        tamaño de la figura (ancho, alto)
+        figure size (width, height)
 
     ax: matplotlib.axes.Axes
-        eje donde dibujar plot. si None, se crea nuevo
+        axis on which to draw the plot. if None, a new one is created
     
     Returns:
     fig, ax: tuple
-        Objetos figura y eje de matplotlib, para guardar o modificar
+        matplotlib figure and axis objects, for saving or modifying
     """
     if isinstance(components, int):
         components = (1, components)
 
     links = []
     blocks = list(model.names_.keys())
+    
+    logger.info(f"Plotting circos | blocks: {len(blocks)} | components: {components} | cutoff: {cutoff} | show_intra_links: {show_intra_links}")
     
     if block_colors is None:
         block_colors = {}
@@ -82,15 +87,17 @@ def plot_circos(
         
         active_index = np.where(np.any(raw_loadings != 0, axis=1))[0]
         
-        # se ordena por loading en la componente 1
+        # sort by loading on component 1
         sort_order = np.argsort(raw_loadings[active_index][:, 0])
         ordered_index = active_index[sort_order]
         
-        # se extraen los nombres reales de los biomarcadores
+        # extract the real names of the biomarkers
         active_names = [model.names_[block][i] for i in ordered_index]
         
         X_df = model.X_dict_[block]
-        X_active = X_df[active_names].values # matriz de muestras x variables activas
+        X_active = X_df[active_names].values # matrix of samples x active variables
+
+        logger.debug(f"Block '{block}': {len(active_names)} active variables (of {model.X_dict_[block].shape[1]}).")
 
         active_features[block] = {
             'indices': ordered_index,
@@ -101,7 +108,7 @@ def plot_circos(
 
     variates = model.transform(model.X_dict_)
 
-    # calcular correlaciones entre los biomarcadores activos
+    # calculate correlations between the active biomarkers
     for i in range(len(blocks)):
         start_j = i if show_intra_links else i + 1
         for j in range(start_j, len(blocks)):
@@ -113,13 +120,13 @@ def plot_circos(
             X2 = active_features[b2]['X']
             T2 = variates[b2][:, components[0]-1:components[1]]
             
-            # calcular correlaciones
+            # calculate correlations
             corr_X1_T1 = get_cross_corr(X1, T1)
             corr_X2_T2 = get_cross_corr(X2, T2)
             
             corr = (corr_X1_T1 @ corr_X2_T2.T)
             
-            # añadir aristas segun cutoff
+            # add edges according to cutoff
             rows, columns = np.where(np.abs(corr) >= cutoff)
             
             for vi, vj in zip(rows, columns):
@@ -129,44 +136,46 @@ def plot_circos(
                     'corr': corr[vi, vj]
                 })
 
-    # crear circos con pycirclize
-    sectors = {b: len(active_features[b]['names']) for b in blocks} # se crea un sector por bloque, con tamaño cantidad de variables biomarcadores
+    logger.debug(f"Computed {len(links)} links above the {cutoff} cutoff.")
+
+    # create circos with pycirclize
+    sectors = {b: len(active_features[b]['names']) for b in blocks} # one sector is created per block, sized by the number of biomarker variables
     
-    # manejar caso extremo donde se descartó todo
+    # handle extreme case where everything was discarded
     if sum(sectors.values()) == 0:
-        raise ValueError("Ninguna variable superó el umbral de varianza. Revisa keepX o cutoff.")
+        raise ValueError("No variable exceeded the variance threshold. Review keepX or cutoff.")
     
     circos = pycirclize.Circos(sectors, space=5)
     
-    # se extraen las medias crudas para las curvas de expresión
+    # extract the raw means for the expression curves
     all_group_means = model.get_expression_means(active_features, group_colors)
     
     for sector in circos.sectors:
         
-        # -- anillo de los bloques --
+        # -- block ring --
         track_block = sector.add_track((70, 75))
         fc_color = block_colors.get(sector.name, 'grey')
         
-        # borde exterior e interior bloque, sin rellenar interior
+        # outer and inner block border, without filling the interior
         track_block.axis(fc="none", ec="black", lw=0.5, alpha=0.5)
         
-        # etiqueta grande con nombre del bloque
+        # large label with the block name
         sector.text(sector.name, r=105, size=14, weight="bold")
 
         names = active_features[sector.name]['names']
 
-        # se pintan sub-bloques intercalados para cada variable (para ver separación entre variables)
+        # paint alternating sub-blocks for each variable (to see the separation between variables)
         for i in range(len(names)):
-            current_alpha = 0.8 if i % 2 == 0 else 0.4 # se usa módulo para alternar tonalidades
+            current_alpha = 0.8 if i % 2 == 0 else 0.4 # module is used to alternate tonalities
             
             sector.rect(i, i+1, r_lim=(70, 75), fc=fc_color, alpha=current_alpha, ec="none")
 
-        # -- etiquetas de variables --
+        # -- variable labels --
         if show_var_names:
             for i, name in enumerate(names):
                 sector.text(name, r=73, x=i + 0.5, orientation="vertical", size=6, color="black")
 
-        # -- anillo exterior de expresión de cada variable --
+        # -- outer expression ring for each variable --
         track_expression = sector.add_track((80, 100))
         x_pos = np.arange(len(names)) + 0.5
         
@@ -178,7 +187,7 @@ def plot_circos(
             y_expression = group_means[group_name]
             track_expression.line(x_pos, y_expression, color=color, lw=1.2, vmin=block_min, vmax=block_max)
     
-    # dibujar links
+    # draw links
     for link in links:
         color = link_colors[0] if link['corr'] > 0 else link_colors[1]
         alpha = min(max((abs(link['corr']) - cutoff) / (1 - cutoff) * 0.8 + 0.2, 0.2), 0.8)    
@@ -197,31 +206,31 @@ def plot_circos(
             alpha=alpha
         )
     
-    # renderizado final
-    if ax is None: # si no se pasa un eje, se crea uno con figsize indicado
+    # final rendering
+    if ax is None: # if no axis is passed, one is created with the indicated figsize
         fig, ax = plt.subplots(figsize=figsize, subplot_kw={'polar': True})
     else:
-        fig = ax.figure # se recupera figura del eje que se pasó
+        fig = ax.figure # retrieve the figure from the passed axis
 
     circos.plotfig(ax=ax)
     
-    # se extrae eje de la figura o el que se pasó como arg
+    # retrieve the axis from the figure or the one passed as an argument
     ax_res = ax
     
-    # -- textos esquinas superiores (superior izquierda - superior derecha) --
+    # -- upper corner texts (upper left - upper right) --
     ax_res.text(0.0, 1.05, f"Comp {components[0]}-{components[1]}", transform=ax_res.transAxes, fontsize=10)
     ax_res.text(1.0, 1.05, f"Correlation cut-off\n    r={cutoff}", transform=ax_res.transAxes, fontsize=10, ha='right')
     
-    # -- leyenda de colores correlaciones (inferior izquierda) --
+    # -- correlation color legend (bottom left) --
     pos_line = mlines.Line2D([], [], color=link_colors[0], label='Positive Correlation', linewidth=2)
     neg_line = mlines.Line2D([], [], color=link_colors[1], label='Negative Correlation', linewidth=2)
 
-    # bbox_to_anchor empuja la leyenda fuera del centro del gráfico
+    # bbox_to_anchor pushes the legend outside the center of the plot
     leg_corr = ax_res.legend(handles=[pos_line, neg_line], loc='lower left', title='Correlations', bbox_to_anchor=(-0.1, -0.1), frameon=False)
 
     ax_res.add_artist(leg_corr)
 
-    # -- leyenda expresión / estaciones (inferior derecha) --
+    # -- expression / conditions legend (bottom right) --
     
     expr_handles = [mlines.Line2D([], [], color=color, marker='o', linestyle='-', markersize=4, label=est) 
                     for est, color in group_colors.items()]
@@ -229,6 +238,8 @@ def plot_circos(
     ax_res.legend(handles=expr_handles, loc='lower right', title='Expression', bbox_to_anchor=(1.1, -0.1), frameon=False)
    
     ax_res.set_title(title, pad=30)
+
+    logger.info(f"Circos plot created: {len(links)} links, {sum(len(f['names']) for f in active_features.values())} active variables.")
 
     return fig, ax_res
 

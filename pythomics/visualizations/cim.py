@@ -1,11 +1,14 @@
 """
-Implementación CIM (Clustered Image Map) o Clustered Heatmap
+CIM (Clustered Image Map) or Clustered Heatmap implementation
 
 ...
 """
 import pandas as pd
 import seaborn as sns
 import matplotlib.lines as mlines
+import logging
+
+logger = logging.getLogger(__name__)
 
 def plot_cim(
     model,
@@ -20,55 +23,56 @@ def plot_cim(
     cmap="Spectral_r"
 ):
     """
-    Genera un Clustered Image Map (CIM) o Clustered Heatmap a partir de un modelo
+    Generates a Clustered Image Map (CIM) or Clustered Heatmap from a model
 
-    Params:
-    model: objeto pythomics.models
-        modelo entrenado...
+    Parameters:
+    model: pythomics.models object
+        trained model...
     components: int/tuple
-        componentes a mostrar en el plot (usado para filtrar variables seleccionadas)
+        components to show in the plot (used to filter selected variables)
     block_colors: dict
-        diccionario que mapea nombre de bloque a color (hexadecimal o nombre de color de matplotlib).
-        La cantidad de colores debe ser igual a la cantidad de bloques en el modelo.
+        dictionary mapping block name to color (hexadecimal or matplotlib color name).
+        The number of colors must match the number of blocks in the model.
     group_colors: dict
-        diccionario que mapea nombre de grupo a color (hexadecimal o nombre de color de matplotlib).
+        dictionary mapping group name to color (hexadecimal or matplotlib color name).
     standardize: bool
-        si True, apliza z-score por columnas para normalizar escalas entre bloques
+        if True, applies z-score per column to normalize scales between blocks
     show_var_names: bool
-        si True, muestra nombres de variables en el ehe x
+        if True, shows variable names on the x axis
     show_sample_names: bool
-        si True, muestra los IDs de las muestras en el eje y
+        if True, shows sample IDs on the y axis
     title: str
-        título plot
+        plot title
     figsize: tuple
-        tamaño de la figura (ancho, alto)
+        figure size (width, height)
     cmap: LinearSegmentedColormap
-        nombre de la paleta de colores de seaborn a usar 
+        name of the seaborn color palette to use
 
     Returns:
     g: seaborn.matrix.ClusterGrid
-        objeto de la cuadrícula de seaborn
+        seaborn grid object
     """
     if block_colors is None:
         block_colors = {}
     if group_colors is None:
         group_colors = {}
     
-    # se asegura que components sea lista iterable
+    # ensures components is an iterable list
     if isinstance(components, int):
         components = [components]
 
 
-    # -- concatenar horizontalmente los bloques de datos (matrices X) de todos los bloques --
+    # -- concatenate the data blocks (X matrices) from all blocks horizontally --
     blocks = list(model.X_dict_.keys())
+    logger.info(f"Plotting CIM | blocks: {len(blocks)} | components: {components} | standardize: {standardize}")
     df_concat_list = []
     col_color_list = []
 
     for block in blocks:
         df_block = model.X_dict_[block]
 
-        # se filtran las variables seleccionadas por DIABLO (unión sobre los componentes pedidos);
-        # si el modelo no está ajustado o el bloque no tiene biomarcadores, se usa el bloque completo
+        # filter the variables selected by DIABLO (union over the requested components);
+        # if the model is not fitted or the block has no biomarkers, the full block is used
         selected_features = set()
         if getattr(model, "loadings_", None) is not None:
             if block in model.loadings_:
@@ -79,22 +83,25 @@ def plot_cim(
         if selected_features:
             df_block = df_block[[col for col in df_block.columns if col in selected_features]]
 
+        logger.debug(f"Block '{block}': {df_block.shape[1]} selected features (of {model.X_dict_[block].shape[1]}).")
         df_concat_list.append(df_block)
 
-        # asignar color de bloque a cada columna del bloque
+        # assign a block color to each column of the block
         block_color = block_colors.get(block, 'grey')
         col_color_list.extend([block_color] * df_block.shape[1])
 
     df_concat = pd.concat(df_concat_list, axis=1).dropna()
 
-    # si hay nombres de variables repetidos entre bloques, se prefijan con el nombre del bloque
+    logger.debug(f"Concatenated matrix: {df_concat.shape[0]} samples x {df_concat.shape[1]} features (after dropna).")
+
+    # if there are duplicated variable names between blocks, prefix them with the block name
     if df_concat.columns.duplicated().any():
         df_concat = pd.concat(
             [df.add_prefix(f"{block}::") for df, block in zip(df_concat_list, blocks)],
             axis=1
         ).dropna()
 
-    # -- mapeo de colores de filas (muestras) según grupo --
+    # -- color mapping of rows (samples) by group --
     sample_groups = model.Y_
     if isinstance(sample_groups, pd.Series):
         try:
@@ -107,11 +114,11 @@ def plot_cim(
     row_colors = sample_groups.map(group_colors)
     row_colors.name = "Grupo"
     
-    # mapear colores de columnas (bloques ómicos)
+    # map column colors (omic blocks)
     col_colors = pd.Series(col_color_list, index=df_concat.columns, name="Bloque")
     
 
-    # -- render con seaborn --
+    # -- render with seaborn --
     z_param = 1 if standardize else None
     g = sns.clustermap(
         df_concat,
@@ -126,17 +133,17 @@ def plot_cim(
         cbar_pos=(0.02, 0.75, 0.03, 0.15)
     )
     
-    # -- texto y leyendas --
+    # -- text and legends --
   
-    g.figure.subplots_adjust(top=0.9, right=0.75) # se ajusta espacio para leyendas y título
+    g.figure.subplots_adjust(top=0.9, right=0.75) # adjust space for legends and title
 
-    # titulo
+    # title
     g.figure.suptitle(title, y=0.98, fontsize=14, weight="bold")
     
-    # color key arriba de paleta de colores
+    # color key above the color palette
     g.ax_cbar.set_title("Color Key", fontsize=10, pad=10)
     
-    # leyenda de colores de filas y columnas
+    # legend for row and column colors
     row_handles = [
         mlines.Line2D([], [], color=color, marker='o', linestyle='None', markersize=7, label=label) 
         for label, color in group_colors.items()
@@ -147,7 +154,7 @@ def plot_cim(
         for label, color in block_colors.items()
     ]
 
-    # se añade leyenda de filas
+    # add row legend
     leg_rows = g.ax_heatmap.legend(
         handles=row_handles, 
         title="Rows", 
@@ -160,7 +167,7 @@ def plot_cim(
     
     g.ax_heatmap.add_artist(leg_rows)
 
-    # se añade leyenda de columnas abajo
+    # add column legend below
     leg_cols = g.ax_heatmap.legend(
         handles=col_handles, 
         title="Columns", 
@@ -170,6 +177,8 @@ def plot_cim(
         title_fontproperties={'weight':'bold', 'size': 14},
         fontsize=12
     )
+
+    logger.info("CIM plot created.")
 
     return g
 

@@ -1,5 +1,5 @@
 """
-Implementación Volcano Plot
+Volcano Plot implementation
 
 ...
 """
@@ -9,6 +9,9 @@ import matplotlib.pyplot as plt
 from matplotlib.lines import Line2D
 import seaborn as sns
 from adjustText import adjust_text
+import logging
+
+logger = logging.getLogger(__name__)
 
 def plot_volcano(
     df,
@@ -22,50 +25,52 @@ def plot_volcano(
     figsize=(10, 8)
 ):
     """
-    Genera un Volcano Plot
+    Generates a Volcano Plot
     
-    Params:
+    Parameters:
     df: pandas.DataFrame
-        DataFrame con los resultados del análisis diferencial
+        DataFrame with the results of the differential analysis
     log2fc_col: str
-        Nombre de la columna con el Log2 Fold Change
+        Name of the column with the Log2 Fold Change
     pval_col: str
-        Nombre de la columna con los p-values crudos o ajustados
+        Name of the column with the raw or adjusted p-values
     gene_name_col: str
-        Nombre de la columna con los nombres de los genes para etiquetar
+        Name of the column with the gene names used for labeling
     fc_cutoff: float
-        Umbral para el Log2 Fold Change (líneas verticales)
+        Threshold for the Log2 Fold Change (vertical lines)
     pval_cutoff: float
-        Umbral para el p-value (línea horizontal
+        Threshold for the p-value (horizontal line
     top_n_labels: int
-        Cantidad de genes más significativos a etiquetar automáticamente
+        Number of the most significant genes to label automatically
     title: str
-        Título principal del gráfico
+        Main title of the plot
     figsize: tuple
-        Tamaño de la figura (ancho, alto
+        Figure size (width, height
     
     Returns:
     fig, ax: tuple
-        Objetos figura y eje de matplotlib, para guardar o modificar
+        Matplotlib figure and axis objects, for saving or modifying
     """
     data = df.copy()
 
-    # evitar log10(0) reemplazando ceros absolutos con el valor flotante más pequeño
+    logger.info(f"Plotting volcano | total: {len(data)} variables | fc_cutoff: {fc_cutoff} | pval_cutoff: {pval_cutoff} | top_n_labels: {top_n_labels}")
+
+    # avoid log10(0) by replacing absolute zeros with the smallest representable float
     min_pval = np.nextafter(0, 1)
     data[pval_col] = data[pval_col].replace(0, min_pval)
 
     data['-log10(p)'] = -np.log10(data[pval_col])
 
-    # -- categoría 1: No significativos (gris) --
+    # -- category 1: Not significant (grey) --
     ns_mask = (abs(data[log2fc_col]) < fc_cutoff) & (data[pval_col] >= pval_cutoff)
     
-    # -- categoría 2: Solo fc significativo (verde) --
+    # -- category 2: Only fc significant (green) --
     fc_mask = (abs(data[log2fc_col]) >= fc_cutoff) & (data[pval_col] >= pval_cutoff)
 
-    # -- categoría 3: Solo p-value significativo (azul) --
+    # -- category 3: Only p-value significant (blue) --
     p_mask = (abs(data[log2fc_col]) < fc_cutoff) & (data[pval_col] < pval_cutoff)
 
-    # -- categoría 4: Ambos significativos (rojo) --
+    # -- category 4: Both significant (red) --
     both_mask = (abs(data[log2fc_col]) >= fc_cutoff) & (data[pval_col] < pval_cutoff)
 
     data['category'] = 'NS'
@@ -73,46 +78,50 @@ def plot_volcano(
     data.loc[p_mask, 'category'] = 'p-value'
     data.loc[both_mask, 'category'] = 'p-value and log2 FC'
 
-    # TODO: cambiar colores? parametrizarlos?
+    logger.debug(f"Categories -> NS: {np.sum(ns_mask)} | FC only: {np.sum(fc_mask)} | p-value only: {np.sum(p_mask)} | both: {np.sum(both_mask)}")
+
+    # TODO: change colors? parameterize them?
     
-    # colores (imitando a EnhancedVolcano)
+    # colors (imitating EnhancedVolcano)
     color_map = {
-        'NS': '#B3B3B3',                  # gris
-        'Log2 FC': '#4DAF4A',             # verde
-        'p-value': '#377EB8',             # azul
-        'p-value and log2 FC': '#E41A1C'  # rojo
+        'NS': '#B3B3B3',                  # grey
+        'Log2 FC': '#4DAF4A',             # green
+        'p-value': '#377EB8',             # blue
+        'p-value and log2 FC': '#E41A1C'  # red
     }
 
     fig, ax = plt.subplots(figsize=figsize)
     
-    # puntos se dibujan usando seaborn para mejor manejo de colores
+    # points are drawn with seaborn for better color handling
     sns.scatterplot(
         data=data,
         x=log2fc_col,
         y='-log10(p)',
         hue='category',
         palette=color_map,
-        s=30, # tamaño puntos
+        s=30, # point size
         alpha=0.7,
         edgecolor=None,
         ax=ax,
-        legend=False, # se desactiva leyenda por defecto
+        legend=False, # default legend is disabled
     )
     
-    # línea horizontal para p-value
+    # horizontal line for the p-value
     ax.axhline(y=-np.log10(pval_cutoff), color='black', linestyle='--', linewidth=1, alpha=0.8)
 
-    # líneas verticales para Log2 Fold Change
+    # vertical lines for the Log2 Fold Change
     ax.axvline(x=fc_cutoff, color='black', linestyle='--', linewidth=1, alpha=0.8)
     ax.axvline(x=-fc_cutoff, color='black', linestyle='--', linewidth=1, alpha=0.8)
 
     texts = []
     
-    # se filtran genes significativos en ambas métricas (rojos)
+    # filter genes significant in both metrics (red)
     sig_genes = data[data['category'] == 'p-value and log2 FC']
     
-    # se ordenan por el p-value más extremo para etiquetar los "Top N"
+    # sort by the most extreme p-value to label the "Top N"
     top_genes = sig_genes.sort_values(by=pval_col, ascending=True).head(top_n_labels)
+
+    logger.debug(f"Labeling top {len(top_genes)} significant genes.")
 
     for _, row in top_genes.iterrows():
         texts.append(
@@ -125,7 +134,7 @@ def plot_volcano(
             )
         )
 
-    # se usa adjustText para que nombres no se solapen ni tapen puntos
+    # adjustText is used so that the names do not overlap or cover the points
     if texts:
         adjust_text(
             texts,
@@ -139,13 +148,13 @@ def plot_volcano(
     ax.set_xlabel(r'$\mathregular{Log_2}$ fold change', fontsize=14)
     ax.set_ylabel(r'$\mathregular{-Log_{10}\ P}$', fontsize=14)
 
-    # se recrea leyenda manualmente
+    # recreate the legend manually
     legend_elements = [
         Line2D([0], [0], marker='o', color='w', label=k, markerfacecolor=v, markersize=10)
         for k, v in color_map.items()
     ]
 
-    # se arregla leyenda para que aparezca arriba
+    # fix the legend so it appears on top
     ax.legend(
         handles=legend_elements, 
         loc='upper center', 
@@ -155,13 +164,15 @@ def plot_volcano(
         fontsize=12,
     )
     
-    # limpia bordes superior y derecho
+    # clean up the top and right borders
     sns.despine()
     
-    # se muestra total de variables abajo derecha
+    # show the total number of variables at the bottom right
     plt.figtext(0.9, 0.05, f'total = {len(data)} variables', ha='right', fontsize=10)
     
     plt.tight_layout()
+
+    logger.info("Volcano plot created.")
 
     return fig, ax 
 

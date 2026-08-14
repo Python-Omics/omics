@@ -1,15 +1,18 @@
 """
-NipalsPCA: estimador de PCA compatible con scikit-learn, portado desde el
-paquete R `mixOmics` (funciones `pca()` y `nipals()`).
+NipalsPCA: a scikit-learn compatible PCA estimator ported from the R
+package `mixOmics` (functions `pca()` and `nipals()`).
 """
 
 from __future__ import annotations
 
 import warnings
+import logging
 
 import numpy as np
 from sklearn.base import BaseEstimator, TransformerMixin
 from sklearn.utils.validation import check_array, check_is_fitted
+
+logger = logging.getLogger(__name__)
 
 try:
     check_array(np.zeros((1, 1)), ensure_all_finite="allow-nan")
@@ -19,7 +22,7 @@ except TypeError:
 
 
 def _nipals(X, ncomp=2, max_iter=500, tol=1e-6):
-    """Port de `nipals()` (R), incluyendo los avisos que R emite via message()."""
+    """Port of `nipals()` (R), including the notes that R emits via message()."""
     X = np.asarray(X, dtype=float)
     nr, nc = X.shape
 
@@ -29,8 +32,8 @@ def _nipals(X, ncomp=2, max_iter=500, tol=1e-6):
 
     if np.any(np.all(np.isnan(X), axis=0)) or np.any(np.all(np.isnan(X), axis=1)):
         raise ValueError(
-            "Algunas filas o columnas estan completamente vacias (NaN). "
-            "Elimínelas antes de ejecutar el PCA."
+            "Some rows or columns are completely empty (NaN). "
+            "Remove them before running the PCA."
         )
 
     p = np.zeros((nc, ncomp))
@@ -84,7 +87,10 @@ def _nipals(X, ncomp=2, max_iter=500, tol=1e-6):
 
         if iter_count > max_iter:
             warnings.warn(
-                f"Se alcanzo el numero maximo de iteraciones para el componente {h + 1}."
+                f"Maximum number of iterations reached for component {h + 1}."
+            )
+            logger.warning(
+                f"Maximum number of iterations reached for component {h + 1}."
             )
 
         X_iter = X_iter - np.outer(th, ph_new)
@@ -94,9 +100,14 @@ def _nipals(X, ncomp=2, max_iter=500, tol=1e-6):
             max_corr = np.max(np.abs(corr)) if corr.size else 0.0
             if max_corr >= 0.05:
                 warnings.warn(
-                    f"El componente {h + 1} no es ortogonal a los anteriores "
-                    f"(corr max = {max_corr:.3f}). Considere filtrar variables con "
-                    "alta tasa de datos faltantes o imputarlos."
+                    f"Component {h + 1} is not orthogonal to the previous ones "
+                    f"(max corr = {max_corr:.3f}). Consider filtering variables with "
+                    "a high rate of missing data or imputing them."
+                )
+                logger.warning(
+                    f"Component {h + 1} is not orthogonal to the previous ones "
+                    f"(max corr = {max_corr:.3f}). Consider filtering variables with "
+                    "a high rate of missing data or imputing them."
                 )
 
         p[:, h] = ph_new
@@ -112,7 +123,7 @@ def _nipals(X, ncomp=2, max_iter=500, tol=1e-6):
 
 
 def _scale_matrix(X, center=True, scale=False):
-    """Port de `scale()` de R aplicado con center/scale booleanos o vectores."""
+    """Port of R's `scale()` applied with boolean center/scale or vectors."""
     nr, nc = X.shape
     X = np.asarray(X, dtype=float)
 
@@ -163,10 +174,10 @@ def _within_variation(X, design):
 
 
 def _match_logratio(value):
-    """Empareja `value` (case-insensitive, admite prefijos no ambiguos) contra
-    {'CLR', 'ILR', 'none'}. A diferencia de la version original, aqui SI se
-    valida correctamente (antes 'none' nunca calzaba por mayusculas/minusculas
-    y dependia de un fallback por defecto)."""
+    """Matches `value` (case-insensitive, allows unambiguous prefixes) against
+    {'CLR', 'ILR', 'none'}. Unlike the original version, here it is properly
+    validated (previously 'none' never matched due to case, and it relied on
+    a default fallback)."""
     choices = ["CLR", "ILR", "none"]
     v = str(value).upper()
     matches = [c for c in choices if c.upper().startswith(v)]
@@ -176,44 +187,44 @@ def _match_logratio(value):
     if v in upper_choices:
         return choices[upper_choices.index(v)]
     raise ValueError(
-        f"'logratio' debe ser uno de {choices} (o un prefijo no ambiguo); "
-        f"se recibio {value!r}."
+        f"'logratio' must be one of {choices} (or an unambiguous prefix); "
+        f"received {value!r}."
     )
 
 
 class NipalsPCA(BaseEstimator, TransformerMixin):
-    """PCA con soporte para datos faltantes via NIPALS (equivalente a
-    `mixOmics::pca()` en R). Cuando no hay NaN se usa SVD estandar; cuando
-    los hay, se usa el algoritmo iterativo NIPALS.
+    """PCA with support for missing data via NIPALS (equivalent to
+    `mixOmics::pca()` in R). When there are no NaN values, standard SVD is
+    used; when there are, the iterative NIPALS algorithm is used.
 
-    Tener en consideración que mixOmics usa varianza poblacional y la implementación
-    se adapta a los estándares de python usando varianza muestral.
+    Note that mixOmics uses population variance, while this implementation
+    follows Python standards and uses sample variance.
 
     Parameters
     ----------
     n_components : int, default=2
-        Numero de componentes a extraer.
+        Number of components to extract.
     center : bool or array-like of shape (n_features,), default=True
-        Si es True, centra cada columna en su media. Tambien puede
-        entregarse un vector de centrado explicito.
+        If True, centers each column at its mean. An explicit centering
+        vector can also be provided.
     scale : bool or array-like of shape (n_features,), default=False
-        Si es True, escala cada columna a desviacion estandar 1 (con un
-        chequeo previo de varianza cero). Tambien puede entregarse un
-        vector de escalas explicito.
+        If True, scales each column to unit standard deviation (with a
+        prior check for zero variance). An explicit vector of scales can
+        also be provided.
     max_iter : int, default=500
-        Maximo de iteraciones del algoritmo NIPALS por componente.
+        Maximum number of iterations of the NIPALS algorithm per component.
     tol : float, default=1e-9
-        Tolerancia de convergencia de NIPALS.
+        Convergence tolerance of NIPALS.
     logratio : {'none', 'CLR', 'ILR'}, default='none'
-        Transformacion log-ratio a aplicar antes del PCA (para datos
-        composicionales). Admite prefijos no ambiguos, case-insensitive.
+        Log-ratio transformation to apply before the PCA (for compositional
+        data). Allows unambiguous prefixes, case-insensitive.
     ilr_offset : float, default=0.001
-        Offset sumado a los datos antes de la transformacion ILR/CLR.
+        Offset added to the data before the ILR/CLR transformation.
     V : array-like of shape (n_features, n_features - 1), optional
-        Matriz de base de Helmert para la transformacion ILR. Si es None
-        y `logratio='ILR'`, se calcula automaticamente.
+        Helmert basis matrix for the ILR transformation. If None and
+        `logratio='ILR'`, it is computed automatically.
     multilevel : array-like of shape (n_samples,), optional
-        Vector de diseño para el analisis multinivel (medidas repetidas).
+        Design vector for the multilevel analysis (repeated measurements).
 
     Attributes
     ----------
@@ -222,11 +233,11 @@ class NipalsPCA(BaseEstimator, TransformerMixin):
     mean_ : ndarray of shape (n_features,)
     scale_ : ndarray of shape (n_features,)
     components_ : ndarray of shape (n_components, n_features)
-        Loadings, convencion scikit-learn (filas = componentes).
+        Loadings, scikit-learn convention (rows = components).
     loadings_ : ndarray of shape (n_features, n_components)
-        Los mismos loadings, convencion R/mixOmics (columnas = componentes).
+        The same loadings, R/mixOmics convention (columns = components).
     variates_ : ndarray of shape (n_samples, n_components)
-        Scores/proyeccion de los datos de entrenamiento.
+        Scores/projection of the training data.
     sdev_ : ndarray of shape (n_components,)
     explained_variance_ : ndarray of shape (n_components,)
     explained_variance_ratio_ : ndarray of shape (n_components,)
@@ -234,8 +245,8 @@ class NipalsPCA(BaseEstimator, TransformerMixin):
     cum_var_ : ndarray of shape (n_components,)
     total_variance_ : float
     Xw_ : ndarray or None
-        Datos tras remover variacion inter-nivel (solo si `multilevel` se
-        entrego).
+        Data after removing between-level variation (only if `multilevel`
+        was provided).
     """
 
     def __init__(
@@ -271,33 +282,36 @@ class NipalsPCA(BaseEstimator, TransformerMixin):
         n_components = int(round(n_components))
         if n_components < 1 or n_components > min(n_samples, n_features):
             raise ValueError(
-                "'n_components' invalido: debe estar entre 1 y "
+                "'n_components' is invalid: it must be between 1 and "
                 "min(n_samples, n_features)."
             )
 
         if self.max_iter is None or self.max_iter < 1:
-            raise ValueError("'max_iter' invalido.")
+            raise ValueError("'max_iter' is invalid.")
         max_iter = int(round(self.max_iter))
 
         logratio = _match_logratio(self.logratio)
         if logratio != "none" and np.any(X < 0):
             raise ValueError(
-                "X contiene valores negativos, no se puede aplicar una "
-                "transformacion log-ratio."
+                "X contains negative values; a log-ratio transformation "
+                "cannot be applied."
             )
 
         if not isinstance(self.center, bool) and len(self.center) != n_features:
-            raise ValueError("'center' no coincide con el numero de columnas de X.")
+            raise ValueError("'center' does not match the number of columns in X.")
         if not isinstance(self.scale, bool) and len(self.scale) != n_features:
-            raise ValueError("'scale' no coincide con el numero de columnas de X.")
+            raise ValueError("'scale' does not match the number of columns in X.")
 
-        # -- transformacion log-ratio --------------------------------------
+        logger.info(f"Fitting NipalsPCA | n_components: {n_components} | X: {n_samples}x{n_features}")
+
+        # -- log-ratio transformation -------------------------------------
         V = self.V
         if V is None and logratio == "ILR":
             V = _clr_backtransfo(X)
 
         if logratio in ("CLR", "ILR"):
             offset = self.ilr_offset if logratio == "ILR" else 0.0
+            logger.debug(f"Applying {logratio} log-ratio transformation (offset={offset})")
             X_pos = X + offset
             geom_mean = np.exp(np.nanmean(np.log(X_pos), axis=1, keepdims=True))
             X_lr = np.log(X_pos / geom_mean)
@@ -305,23 +319,24 @@ class NipalsPCA(BaseEstimator, TransformerMixin):
                 X = X_lr @ V
                 if n_components > min(X.shape):
                     raise ValueError(
-                        "'n_components' es demasiado grande para los datos "
-                        "transformados con ILR; use un valor menor."
+                        "'n_components' is too large for the data transformed "
+                        "with ILR; use a smaller value."
                     )
             else:
                 X = X_lr
 
-        # -- analisis multinivel --------------------------------------------
+        # -- multilevel analysis -------------------------------------------
         self.Xw_ = None
         if self.multilevel is not None:
             multilevel = np.asarray(self.multilevel)
             if multilevel.ndim > 1 and multilevel.shape[1] != 1:
                 raise ValueError(
-                    "'multilevel' debe tener una unica columna para las "
-                    "medidas repetidas."
+                    "'multilevel' must have a single column for the "
+                    "repeated measurements."
                 )
             if X.shape[0] != multilevel.shape[0]:
-                raise ValueError("X y 'multilevel' deben tener el mismo numero de filas.")
+                raise ValueError("X and 'multilevel' must have the same number of rows.")
+            logger.debug("Applying within-variation (multilevel) correction.")
             _, design_codes = np.unique(multilevel.ravel(), return_inverse=True)
             X = _within_variation(X, design_codes)
             self.Xw_ = X.copy()
@@ -330,7 +345,7 @@ class NipalsPCA(BaseEstimator, TransformerMixin):
             col_sd = np.nanstd(X, axis=0, ddof=1)
             if np.any(col_sd == 0):
                 raise ValueError(
-                    "No se puede escalar: hay columnas con varianza cero."
+                    "Cannot scale: there are columns with zero variance."
                 )
 
         X_scaled, cen, sc = _scale_matrix(X, center=self.center, scale=self.scale)
@@ -338,12 +353,15 @@ class NipalsPCA(BaseEstimator, TransformerMixin):
         has_na = np.any(np.isnan(X_scaled))
         variates = None
         if has_na:
+            logger.debug("Using NIPALS iterative algorithm (missing data detected).")
             res = _nipals(X_scaled, ncomp=n_components, max_iter=max_iter, tol=self.tol)
             sdev_raw, loadings_raw = res["eig"], res["p"]
         elif logratio in ("CLR", "none"):
+            logger.debug("Using SVD.")
             U, S, Vt = np.linalg.svd(X_scaled, full_matrices=False)
             sdev_raw, loadings_raw = S, Vt.T
-        else:  # ILR, datos completos
+        else:  # ILR, complete data
+            logger.debug("Using SVD (ILR, complete data).")
             U, S, Vt = np.linalg.svd(X_scaled, full_matrices=False)
             sdev_raw = S[:n_components] / np.sqrt(max(1, n_samples - 1))
             loadings_raw = V @ Vt.T[:, :n_components]
@@ -355,7 +373,7 @@ class NipalsPCA(BaseEstimator, TransformerMixin):
         if variates is None:
             variates = Xf @ loadings
 
-        # -- atributos estilo scikit-learn ----------------------------------
+        # -- scikit-learn style attributes ---------------------------------
         self.n_components_ = n_components
         self.mean_ = cen
         self.scale_ = sc
@@ -375,6 +393,7 @@ class NipalsPCA(BaseEstimator, TransformerMixin):
         self.singular_values_ = sdev * np.sqrt(max(1, n_samples - 1))
         self.cum_var_ = np.cumsum(self.explained_variance_ratio_)
 
+        logger.info("NipalsPCA fit completed.")
         return self
 
     def transform(self, X):
@@ -382,8 +401,9 @@ class NipalsPCA(BaseEstimator, TransformerMixin):
         X = check_array(X, dtype=float, **_NAN_KW)
         if X.shape[1] != self.n_features_in_:
             raise ValueError(
-                "X tiene un numero de columnas distinto al usado en fit()."
+                "X has a different number of columns than the one used in fit()."
             )
+        logger.debug(f"Transforming {X.shape[0]} samples with {self.n_components_} components.")
         X_scaled = (X - self.mean_) / self.scale_
         X_scaled = np.nan_to_num(X_scaled, nan=0.0)
         return X_scaled @ self.components_.T

@@ -1,9 +1,9 @@
 """
-Funciones Helpers para Mint.
+Helper functions for Mint.
 
-basadas en: MixOmics/R/internal_mint.block_helpers.R
+based on: MixOmics/R/internal_mint.block_helpers.R
 
-Lista de faltantes:
+List of missing items:
 - initsvd
 - initialisation_by_svd
 - soft
@@ -13,7 +13,7 @@ Lista de faltantes:
 - rank
 - sparsity
 
-***Fixear documentación + traducir + tests***
+***Fix documentation + translate + tests***
 """
 
 import numpy as np
@@ -21,23 +21,23 @@ from dataclasses import dataclass
 
 def study_split(data, study, levels=None):
     """
-    Divide una matriz en sub-matrices según un factor de agrupacion 'study'
-    Por defecto (levels=None), niveles ordenados alfabeticamente/numericamente, 
-    igual que el factor() por defecto de R.
-    Si se quiere un orden específico, se modifica el param levels.
+    Splits a matrix into sub-matrices according to a 'study' grouping factor.
+    By default (levels=None), levels are sorted alphabetically/numerically,
+    same as R's default factor().
+    To request a specific order, modify the levels parameter.
 
     Param:
     data: array-like, shape (n, p)
-    study: array-like, shape (n,); etiqueta de estudio de cada fila de 'data'
-    levels: list, opcional; orden de los niveles; por defecto, np.unique(study)
+    study: array-like, shape (n,); study label of each row of 'data'
+    levels: list, optional; order of the levels; by default, np.unique(study)
 
     Return:
-    dict: {nivel: sub-matriz np.ndarray (n_nivel, p)}
+    dict: {level: sub-matrix np.ndarray (n_level, p)}
     """
     data = np.asarray(data)
     study = np.asarray(study)
     if data.shape[0] != study.shape[0]:
-        raise ValueError("'data' y 'study' deben tener el mismo numero de filas.")
+        raise ValueError("'data' and 'study' must have the same number of rows.")
 
     if levels is None:
         levels = np.unique(study)
@@ -47,17 +47,17 @@ def study_split(data, study, levels=None):
 
 def l2_norm(x):
     """
-    Normaliza un vector a norma L2 = 1.
+    Normalizes a vector to L2 norm = 1.
     """
     x = np.asarray(x, dtype=float)
     if x.ndim != 1:
-        raise ValueError("x tiene que ser un vector.")
+        raise ValueError("x must be a vector.")
     return x / np.sqrt(x @ x)
 
 
 def norm2(vec):
     """
-    Norma L2, con el mismo caso que R: si la norma = 0, devuelve 0.05.
+    L2 norm, with the same behavior as R: if the norm is 0, returns 0.05.
     """
     vec = np.asarray(vec, dtype=float)
     a = np.sqrt(np.sum(vec ** 2))
@@ -68,17 +68,17 @@ def norm2(vec):
 
 def cov2(x, y=None, bias=False):
     """
-    Covarianza (o varianza si y=None) con manejo de NA via observaciones 
-    pairwise-completas (cov(x, use="pairwise.complete.obs") en R).
+    Covariance (or variance if y=None) with NA handling via
+    pairwise-complete observations (cov(x, use="pairwise.complete.obs") in R).
 
     Param:
     x : array-like, shape (n, p)
-    y : array-like, shape (n, q), opcional
-    bias : bool; si True, aplica la correccion (n-1)/n 
-    (***divide por n en vez de n-1***)
+    y : array-like, shape (n, q), optional
+    bias : bool; if True, applies the (n-1)/n correction
+    (***divides by n instead of n-1***)
 
     Return:
-    np.ndarray: (p, p) si y is None; (p, q) si y esta dado
+    np.ndarray: (p, p) if y is None; (p, q) if y is given
     """
     x = np.asarray(x, dtype=float)
     n = x.shape[0]
@@ -107,7 +107,7 @@ def cov2(x, y=None, bias=False):
 
 def pairwise_cov(x, y):
     """
-    Covarianza pairwise-complete entre columnas de x y columnas de y.
+    Pairwise-complete covariance between columns of x and columns of y.
     """
     p, q = x.shape[1], y.shape[1]
     C = np.full((p, q), np.nan)
@@ -127,7 +127,7 @@ def pairwise_cov(x, y):
 
 def miscrossprod(x, y):
     """
-    Producto cruzado ignorando NaN (sum(x*y, na.rm=TRUE) de R).
+    Cross product ignoring NaN (sum(x*y, na.rm=TRUE) in R).
     """
     x = np.asarray(x, dtype=float).ravel()
     y = np.asarray(y, dtype=float).ravel()
@@ -135,8 +135,8 @@ def miscrossprod(x, y):
 
 def tau_estimate(x):
     """
-    Fórmula analítica de Strimmer para estimar la intensidad optima de 
-    encogimiento (tau) de la matriz de correlacion hacia la identidad.
+    Strimmer's analytical formula to estimate the optimal shrinkage
+    intensity (tau) of the correlation matrix toward the identity.
     """
     x = np.asarray(x, dtype=float)
     n, p = x.shape
@@ -157,24 +157,24 @@ def tau_estimate(x):
 
 def deflation(X, y, misdata_q=False, is_na_A_q=None, ind_NA=None):
     """
-    Regresa cada columna de X sobre el vector y, y devuelve los
-    coeficientes de esa regresion (p) como la matriz residual (R = X - y*p').
+    Regresses each column of X on the vector y, and returns the
+    coefficients of that regression (p) as the residual matrix (R = X - y*p').
 
-    Con datos completos, cada columna de R queda exactamente ortogonal a y 
-    (y' @ R ~= 0), porque p se elige como la proyeccion minimos-cuadrados 
-    de X sobre y.
+    With complete data, each column of R is left exactly orthogonal to y
+    (y' @ R ~= 0), because p is chosen as the least-squares projection
+    of X onto y.
 
     Param:
     X: array-like, shape (n, p)
     y: array-like, shape (n,)
-    misdata_q: bool; si el bloque X tiene datos faltantes
-    is_na_A_q: np.ndarray booleano, shape (n, p), requerido si misdata_q=True;
-    mascara de NaN de X (se asume que los NaN de X YA fueron reemplazados por 0
-    en X mismo, siguiendo la convencion de internal_mint.block.R)
-    ind_NA: array-like de indices de columna con al menos un NaN, opcional
+    misdata_q: bool; whether block X has missing data
+    is_na_A_q: boolean np.ndarray, shape (n, p), required if misdata_q=True;
+    NaN mask of X (the NaN of X are assumed to have ALREADY been replaced by 0
+    in X itself, following the convention of internal_mint.block.R)
+    ind_NA: array-like of column indices with at least one NaN, optional
 
     Return:
-    (p, R): tupla de (np.ndarray shape (p,), np.ndarray shape (n, p))
+    (p, R): tuple of (np.ndarray shape (p,), np.ndarray shape (n, p))
     """
     X = np.asarray(X, dtype=float)
     y = np.asarray(y, dtype=float).ravel()
@@ -182,7 +182,7 @@ def deflation(X, y, misdata_q=False, is_na_A_q=None, ind_NA=None):
 
     if misdata_q:
         if is_na_A_q is None:
-            raise ValueError("is_na_A_q es necesario cuando misdata_q=True.")
+            raise ValueError("is_na_A_q is required when misdata_q=True.")
 
         loadings_temp = X.T @ y
         d_norm = np.full(p_cols, y @ y)
@@ -206,37 +206,37 @@ def deflation(X, y, misdata_q=False, is_na_A_q=None, ind_NA=None):
 def defl_select(yy, rr, nncomp, nn, nbloc, indY=None, mode="canonical",
                  aa=None, misdata=None, is_na_A=None, ind_NA=None):
     """
-    Aplica la deflacion correspondiente a cada bloque segun el 'mode' del
-    análisis:
-    - canonical (default): cada bloque (incluido Y) se defla independientemente
-      sobre su propia variate.
-    - classic: el bloque Y NO se defla sobre su propia variate; los
-      bloques X se deflan usando el promedio de las variates de los otros
-      bloques.
-    - invariant: no hay deflacion en absoluto (los residuos son los datos
-      originales sin cambios).
-    - regression: similar a "classic" pero usando el promedio de los
-      RESIDUOS de deflactar contra cada otro bloque, no un promedio directo.
+    Applies the deflation corresponding to each block according to the 'mode'
+    of the analysis:
+    - canonical (default): each block (including Y) is deflated independently
+      on its own variate.
+    - classic: block Y is NOT deflated on its own variate; the
+      X blocks are deflated using the average of the variates of the other
+      blocks.
+    - invariant: there is no deflation at all (the residuals are the original
+      data unchanged).
+    - regression: similar to "classic" but using the average of the
+      residuals from deflating against each other block, not a direct average.
 
     Param:
-    yy: np.ndarray, shape (n, nbloc); variates de todos los bloques en la 
-    iteracion actual (columna q = bloque q)
-    rr: list de np.ndarray, longitud nbloc; matrices residuales actuales de
-    cada bloque
-    nncomp: array-like, longitud nbloc; numero de deflaciones a aplicar por
-    bloque (tipicamente ncomp-1)
-    nn: int; componente actual, 1-indexado (para que 'nn <= nncomp[q]' 
-    calce con la convencion de R)
+    yy: np.ndarray, shape (n, nbloc); variates of all blocks in the current
+    iteration (column q = block q)
+    rr: list of np.ndarray, length nbloc; current residual matrices of
+    each block
+    nncomp: array-like, length nbloc; number of deflations to apply per
+    block (typically ncomp-1)
+    nn: int; current component, 1-indexed (so that 'nn <= nncomp[q]'
+    matches the R convention)
     nbloc: int
-    indY: int o None; indice 0-based del bloque Y (resta 1 al portar el indY
-    de R)
+    indY: int or None; 0-based index of block Y (subtract 1 when porting the
+    indY from R)
     mode: {"canonical", "classic", "invariant", "regression"}
-    aa: list de np.ndarray, requerido si mode="classic"; loadings actuales de
-    cada bloque
-    misdata, is_na_A, ind_NA : listas por bloque para manejo de NA (opcional)
+    aa: list of np.ndarray, required if mode="classic"; current loadings of
+    each block
+    misdata, is_na_A, ind_NA : per-block lists for NA handling (optional)
 
     Return:
-    (resdefl, pdefl) : tupla de listas de longitud nbloc
+    (resdefl, pdefl) : tuple of lists of length nbloc
     """
     if misdata is None:
         misdata = [False] * nbloc
@@ -276,7 +276,7 @@ def defl_select(yy, rr, nncomp, nn, nbloc, indY=None, mode="canonical",
                 pdefl[q] = np.zeros(rr[q].shape[1])
 
             else:
-                raise ValueError(f"mode desconocido: {mode!r}")
+                raise ValueError(f"unknown mode: {mode!r}")
         else:
             resdefl[q] = rr[q]
             pdefl[q] = np.zeros(rr[q].shape[1])
@@ -286,30 +286,30 @@ def defl_select(yy, rr, nncomp, nn, nbloc, indY=None, mode="canonical",
 
 
 # -----------------------------------------------------
-# Clases para Resultados de Funciones:
+# Classes for Function Results:
 # scale_function returns ScaleResult
 # mean_centering_per_study returns MeanCenteringResult
 # -----------------------------------------------------
 
 @dataclass
 class ScaleResult:
-    data: np.ndarray # datos centrados (y escalados si scale=True)
-    mean: np.ndarray # media por columna (shape (p,))
-    sigma: np.ndarray # sd por columna (shape (p,)), o None si scale=False
+    data: np.ndarray # centered data (and scaled if scale=True)
+    mean: np.ndarray # per-column mean (shape (p,))
+    sigma: np.ndarray # per-column sd (shape (p,)), or None if scale=False
 
 @dataclass
 class MeanCenteringResult:
-    data: np.ndarray # matriz concatenada, centrada/escalada por estudio, mismo orden de filas que el input
-    means: dict # {nivel_estudio: vector de medias (p,)}
-    sigmas: dict # {nivel_estudio: vector de sd (p,)} o {nivel_estudio: None} si scale=False
-    levels: list # niveles de estudio, en el orden usado
+    data: np.ndarray # concatenated matrix, centered/scaled per study, same row order as the input
+    means: dict # {study_level: vector of means (p,)}
+    sigmas: dict # {study_level: vector of sd (p,)} or {study_level: None} if scale=False
+    levels: list # study levels, in the order used
 
 
 def scale_function(temp, scale=True):
     """
-    Centra (y opcionalmente escala a varianza 1) una matriz, ignorando NaN
-    columna por columna (colMeans(na.rm=TRUE) y matrixStats::colSds(na.rm=TRUE),
-    que es la sd muestral, ddof=1).
+    Centers (and optionally scales to variance 1) a matrix, ignoring NaN
+    column by column (colMeans(na.rm=TRUE) and matrixStats::colSds(na.rm=TRUE),
+    which is the sample sd, ddof=1).
     """
     temp = np.asarray(temp, dtype=float)
     mean_x = np.nanmean(temp, axis=0)
@@ -321,8 +321,8 @@ def scale_function(temp, scale=True):
         with np.errstate(invalid="ignore", divide="ignore"):
             data_scale = centered / sqrt_sdx
         if np.any(zero_sd):
-            # Si alguna columna tiene sd=0 (varianza nula), se evita el NaN 
-            # resultante de dividir por 0 poniendo esa columna en 0 directamente.
+            # If a column has sd=0 (zero variance), the NaN resulting from
+            # dividing by 0 is avoided by setting that column to 0 directly.
             data_scale[:, zero_sd] = 0.0
     else:
         sqrt_sdx = None
@@ -333,8 +333,8 @@ def scale_function(temp, scale=True):
 
 def mean_centering_per_study(data, study, scale):
     """
-    Centra (y opcionalmente escala) los datos por estudio: cada nivel de
-    'study' se centra/escala usando su propia media/sd.
+    Centers (and optionally scales) the data per study: each level of
+    'study' is centered/scaled using its own mean/sd.
 
     Param:
     data: array-like, shape (n, p)

@@ -1,6 +1,6 @@
 from .pca import NipalsPCA
 
-# se definen las funciones que se exponen al importar paquete
+# define the functions exposed when importing the package
 __all__ = [
     'NipalsPCA'
 ]

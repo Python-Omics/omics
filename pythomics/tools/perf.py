@@ -2,6 +2,9 @@ import inspect
 
 import numpy as np
 from sklearn.model_selection import StratifiedKFold
+import logging
+
+logger = logging.getLogger(__name__)
 
 
 class Perf:
@@ -26,18 +29,22 @@ class Perf:
             if ncomp is None and 'n_components' in params:
                 ncomp = params['n_components'].default
             if ncomp is None:
-                raise ValueError("model_params debe incluir 'n_components' (o 'ncomp').")
+                raise ValueError("model_params must include 'n_components' (or 'ncomp').")
+
+        logger.info(f"Running perf evaluation | model: {self.model_class.__name__} | folds: {self.folds} | nrepeat: {self.nrepeat} | ncomp: {ncomp}")
 
         error_rate_overall = np.zeros((self.nrepeat, ncomp))
         error_rate_ber = np.zeros((self.nrepeat, ncomp, num_classes))
 
         for r in range(self.nrepeat):
+            logger.debug(f"Repetition {r + 1}/{self.nrepeat} (random_state={r})...")
             skf = StratifiedKFold(n_splits=self.folds, shuffle=True, random_state=r)
 
             y_array = y.to_numpy() if hasattr(y, "to_numpy") else np.asarray(y)
             dummy_X = np.zeros((len(y_array), 1))
 
             for fold_idx, (train_idx, test_idx) in enumerate(skf.split(dummy_X, y_array)):
+                logger.debug(f"  Fold {fold_idx + 1}/{self.folds}")
 
                 if isinstance(X, dict):
                     X_train = {k: v[train_idx] for k, v in X.items()}
@@ -52,8 +59,8 @@ class Perf:
 
                 predictions = model.predict(X_test)
 
-                # normalizamos tipos antes de comparar: predict() de DIABLOWrapper
-                # devuelve strings (niveles de factor de R), y_test puede venir como int
+                # normalize types before comparing: predict() from DIABLOWrapper
+                # returns strings (R factor levels), y_test may come as int
                 y_test_str = y_test.astype(str)
 
                 for comp in range(ncomp):
@@ -61,10 +68,12 @@ class Perf:
                     incorrect = preds_comp != y_test_str
                     error_rate_overall[r, comp] += np.sum(incorrect) / len(y_test)
 
-            # promediar sobre los folds de esta repetición
+            # average over the folds of this repetition
             error_rate_overall[r, :] /= self.folds
 
         mean_overall_error = np.mean(error_rate_overall, axis=0)
+
+        logger.info(f"Perf evaluation completed. error_rate_overall: {np.round(mean_overall_error, 4)}")
 
         return {
             "error_rate_overall": mean_overall_error,

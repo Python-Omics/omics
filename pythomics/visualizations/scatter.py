@@ -1,5 +1,5 @@
 """
-Implementación scatter plot 
+scatter plot implementation 
 
 ...
 """
@@ -7,6 +7,9 @@ import pandas as pd
 from scipy.stats import alpha
 import seaborn as sns
 import matplotlib.pyplot as plt
+import logging
+
+logger = logging.getLogger(__name__)
 
 def plot_pca(
     model,
@@ -19,52 +22,54 @@ def plot_pca(
     ax=None
 ):
     """
-    Genera un gráfico de dispersión (scatter plot) para los resultados de un PCA
+    Generates a scatter plot for the results of a PCA
 
-    Params:
-    model: objeto pythomics.tools.NipalsPCA
-        Modelo entrenado de PCA
+    Parameters:
+    model: pythomics.tools.NipalsPCA object
+        Trained PCA model
     metadata: pd.DataFrame
-        DataFrame que contiene metadatos de las muestras (indice debe coincidir con las muestras del modelo)
+        DataFrame containing the sample metadata (index must match the model samples)
     hue: str
-        Nombre de columna en 'metadata' para colorear puntos
+        Column name in 'metadata' to color the points
     style: str
-        Nombre de columna en 'metadata' para asignar diferentes formas a los puntos
+        Column name in 'metadata' to assign different shapes to the points
     title: str
-        Título del gráfico
+        Plot title
     figsize: tuple
-        Tamaño de la figura (ancho, alto)
+        Figure size (width, height)
     palette: str/dict
-        Paleta de colores de seaborn a utilizar (por defecto 'Set1')
+        Seaborn color palette to use (default 'Set1')
     ax: matplotlib.axes.Axes
-        Eje sobre el cual dibujar. Si None, se crea nueva figura y eje.
+        Axis on which to draw. If None, a new figure and axis are created.
 
     Returns:
     fig, ax: tuple
-        Objetos figura y eje de matplotlib, para guardar o modificar
+        Matplotlib figure and axis objects, for saving or modifying
     """
     if ax is None:
         fig, ax = plt.subplots(figsize=figsize)
     else:
         fig = ax.figure
+
+    logger.info(f"Plotting PCA scatter | hue: {hue} | style: {style}")
     
-    # -- extracción de datos de modelo pca --
+    # -- extract data from the pca model --
     if hasattr(model, 'variates_'):
         pca_coords = model.variates_
     elif hasattr(model, 'transform'):
-        # si se paca un pca estándar de sklearn ya fiteado pero sin X de entrenamiento, fallaría,
-        # se asume que se pasa NipalsPCA
+        # if a standard sklearn pca that is already fitted but without training X is passed, it would fail,
+        # it is assumed that NipalsPCA is passed
         pass
     else:
-        raise AttributeError("El modelo proporcionado no parece ser un objeto NipalsPCA válido.")
+        raise AttributeError("The provided model does not appear to be a valid NipalsPCA object.")
 
-    # -- construcción DataFrame para plotear --
+    # -- build DataFrame for plotting --
     plot_df = pd.DataFrame({
         'PC1': pca_coords[:, 0],
         'PC2': pca_coords[:, 1]
     })
 
-    # -- agregar metadatos --
+    # -- add metadata --
     plot_df = pd.concat([plot_df.reset_index(drop=True), metadata.reset_index(drop=True)], axis=1)
     
     # -- scatter plot --
@@ -82,7 +87,7 @@ def plot_pca(
 
     ax.set_title(title, fontsize=14)
     
-    # -- se extrae varianza explicada si modelo la tiene --
+    # -- extract explained variance if the model has it --
     if hasattr(model, 'explained_variance_ratio_'):
         ax.set_xlabel(f"PC1: {model.explained_variance_ratio_[0]*100:.0f}% varianza", fontsize=12)
         ax.set_ylabel(f"PC2: {model.explained_variance_ratio_[1]*100:.0f}% varianza", fontsize=12)
@@ -93,10 +98,12 @@ def plot_pca(
     # ax.set_aspect('equal', adjustable='datalim')
     ax.grid(True, alpha=0.3)
     
-    # se ajusta leyenda
+    # adjust the legend
     if ax.get_legend() is not None:
         ax.legend(bbox_to_anchor=(1.05, 1), loc='upper left')
 
     plt.tight_layout()
-    
+
+    logger.info("PCA scatter plot created.")
+
     return fig, ax 
