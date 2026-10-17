@@ -4,11 +4,27 @@ from sklearn.base import BaseEstimator, TransformerMixin
 import uuid
 import logging
 
-# rpy2 imports
-import rpy2.robjects as robjects
-from rpy2.robjects import FloatVector, StrVector, IntVector
+# rpy2 imports (optional: only required when the DIABLO model is actually fitted/used)
+try:
+    import rpy2.robjects as robjects
+    from rpy2.robjects import FloatVector, StrVector, IntVector
+    _HAS_RPY2 = True
+except ImportError:  # pragma: no cover - depends on the environment
+    robjects = None
+    FloatVector = StrVector = IntVector = None
+    _HAS_RPY2 = False
 
 logger = logging.getLogger(__name__)
+
+
+def _require_rpy2():
+    """Raise a clear error if DIABLO is used without rpy2 installed."""
+    if not _HAS_RPY2:
+        raise ImportError(
+            "DIABLOWrapper requires 'rpy2' and a working R installation with the "
+            "'mixOmics' package. Install them with 'pip install rpy2' and "
+            "install.packages('mixOmics') inside R."
+        )
 
 
 class DIABLOWrapper(BaseEstimator, TransformerMixin):
@@ -49,6 +65,7 @@ class DIABLOWrapper(BaseEstimator, TransformerMixin):
         return instance
 
     def fit(self, X_dict=None, Y=None):
+        _require_rpy2()
         logger.info("Fitting DIABLO model...")
         # NOTE: if X_dict and Y are not passed, the model was built from MuData and they are already stored in the instance
         X_dict = X_dict if X_dict is not None else self.X_dict_
@@ -181,6 +198,7 @@ class DIABLOWrapper(BaseEstimator, TransformerMixin):
         return self
 
     def transform(self, X_dict):
+        _require_rpy2()
         if getattr(self, "r_fit_", None) is None:
             raise RuntimeError(
                 "The model has not been fitted. Run .fit() first."
@@ -276,6 +294,7 @@ class DIABLOWrapper(BaseEstimator, TransformerMixin):
         return df
 
     def predict(self, X_dict):
+        _require_rpy2()
         if getattr(self, "r_fit_", None) is None:
             raise RuntimeError("The model has not been fitted. Run .fit() first.")
 
