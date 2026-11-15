@@ -7,13 +7,13 @@ No R/rpy2 dependency required.
 
 import numpy as np
 import pandas as pd
-from sklearn.base import BaseEstimator, TransformerMixin
+from .._sklearn_compat import BaseEstimator, TransformerMixin
 from dataclasses import dataclass
 import logging
 import uuid
 
 from .mint_internal import internal_mint_block
-from .mint_helpers import study_split
+from .mint_helpers import mean_centering_per_study, study_split
 
 logger = logging.getLogger(__name__)
 
@@ -92,6 +92,18 @@ class MINT(BaseEstimator, TransformerMixin):
         Names of blocks in order
     n_components_ : list
         Number of components per block
+    variates_partial_ : dict or None
+        Per-study variates: {block_name: {study_level: array (n_study, ncomp)}}.
+        Available for the MINT path (``tau=None``).
+    loadings_partial_ : dict or None
+        Per-study loadings: {block_name: {study_level: array (p_k, ncomp)}}.
+        Available for the MINT path (``tau=None``).
+    study_levels_ : list
+        Study levels in the order used for scaling.
+    Y_names_ : list or None
+        Class labels for a categorical response.
+    means_Y_, sigma_Y_ : ndarray or None
+        First-study response centering/scaling used by :meth:`predict`.
     """
     
     def __init__(
@@ -129,6 +141,15 @@ class MINT(BaseEstimator, TransformerMixin):
         self.block_names_ = None
         self.n_components_ = None
         self.indY_ = None
+        self.variates_partial_ = None
+        self.loadings_partial_ = None
+        self.study_levels_ = None
+        self.Y_names_ = None
+        self.means_Y_ = None
+        self.sigma_Y_ = None
+        self._X_scale_info_ = None
+        self._Y_scale_info_ = None
+        self._mint_result = None
         self.r_model_var_ = f"mint_fit_{uuid.uuid4().hex[:8]}"
 
     @classmethod
@@ -324,10 +345,12 @@ class MINT(BaseEstimator, TransformerMixin):
         self.block_names_ = list(X_dict.keys())
         J = len(self.block_names_)
         
-        if J < 2:
+        if J < 1:
+            raise ValueError("MINT requires at least one data block.")
+        if J < 2 and Y is None:
             raise ValueError(
-                "MINT is a multi-block method and requires at least 2 data blocks "
-                f"(received {J}). A single block has a degenerate design matrix."
+                "MINT with a single data block requires a supervised response Y. "
+                "An unsupervised single block has a degenerate design matrix."
             )
         
         # Convert to list of arrays in block order
@@ -345,6 +368,13 @@ class MINT(BaseEstimator, TransformerMixin):
         study = np.asarray(study)
         if study.shape[0] != n:
             raise ValueError(f"study has {study.shape[0]} labels, expected {n}")
+        self.study_levels_ = list(np.unique(study))
+        
+        # Keep the per-study scaling parameters so predict() can apply the
+        # training transform to new samples.
+        self._X_scale_info_ = [
+            mean_centering_per_study(a, study, self.scale) for a in A
+        ]
         
         # Prepare ncomp / design for the X blocks (Y added below if supervised)
         ncomp = self._prepare_ncomp(J)
@@ -359,6 +389,20 @@ class MINT(BaseEstimator, TransformerMixin):
                 raise ValueError(
                     f"Y has {Y_block.shape[0]} samples, expected {n}"
                 )
+            self._Y_scale_info_ = mean_centering_per_study(
+                Y_block, study, self.scale
+            )
+            if np.asarray(Y_original).ndim == 1 and np.asarray(Y_original).dtype.kind not in "iufb":
+                self.Y_names_ = [str(v) for v in np.unique(np.asarray(Y_original))]
+            else:
+                self.Y_names_ = None
+            first_study = self.study_levels_[0]
+            self.means_Y_ = self._Y_scale_info_.means[first_study]
+            if self.scale:
+                sigma = self._Y_scale_info_.sigmas[first_study]
+                self.sigma_Y_ = np.where(sigma == 0, 1.0, sigma)
+            else:
+                self.sigma_Y_ = np.ones(Y_block.shape[1])
             indY = J
             A = A + [Y_block]
             design = self._extend_design_supervised(design, J)
@@ -435,6 +479,20 @@ class MINT(BaseEstimator, TransformerMixin):
             else:
                 self.names_[block] = [f"Var_{i}" for i in range(A[k].shape[1])]
         
+        # Public access to per-study partial components (MINT path only).
+        if result.variates_partial is not None:
+            self.variates_partial_ = {
+                block: result.variates_partial[k]
+                for k, block in enumerate(self.block_names_)
+            }
+            self.loadings_partial_ = {
+                block: result.loadings_partial[k]
+                for k, block in enumerate(self.block_names_)
+            }
+        else:
+            self.variates_partial_ = None
+            self.loadings_partial_ = None
+
         # Save internal result for advanced access
         self._mint_result = result
         
@@ -570,20 +628,100 @@ class MINT(BaseEstimator, TransformerMixin):
         
         return group_means
 
-    def predict(self, X_dict):
+    def predict(self, X_dict, study=None):
         """
-        Predict class labels for new data (supervised mode).
-        
-        Not fully implemented yet - placeholder for compatibility.
+        Predict the response for new data.
+
+        This mirrors ``mixOmics::predict.mint.block.splsda`` / ``predict.mint.splsda``
+        when ``newdata.scale`` is the training matrix: each new block is centered
+        (and optionally scaled) with the per-study training parameters, projected
+        onto the fitted variates, and the response is reconstructed from the
+        fitted loadings.
+
+        Parameters
+        ----------
+        X_dict : dict of {str: array-like}
+            New data blocks, samples x features, with the same blocks/features
+            as the training data.
+        study : array-like, optional
+            Study labels for the new samples. Defaults to the training labels
+            when the number of samples matches; otherwise a single study is used.
+
+        Returns
+        -------
+        dict[str, np.ndarray]
+            ``{block_name: array(n_samples, n_response_columns, n_components)}``,
+            matching the shape of R's ``predict()$predict``.
         """
-        if self.Y_ is None:
-            raise RuntimeError("Predict requires supervised model (Y provided during fit).")
-        
-        logger.warning("MINT predict not fully implemented. Returning dummy predictions.")
-        variates = self.transform(X_dict)
-        n_samples = len(next(iter(variates.values())))
-        n_comp = self.n_components_[0]
-        return np.zeros((n_samples, n_comp), dtype=int)
+        if self._mint_result is None or self.indY_ is None:
+            raise RuntimeError(
+                "Predict requires a fitted supervised model (Y provided during fit)."
+            )
+
+        n = len(next(iter(X_dict.values())))
+        if study is None:
+            if self.study_ is not None and len(self.study_) == n:
+                study = self.study_
+            else:
+                study = np.zeros(n, dtype=int)
+        study = np.asarray(study)
+        if study.shape[0] != n:
+            raise ValueError(f"study has {study.shape[0]} labels, expected {n}.")
+
+        known = set(self.study_levels_)
+        unknown = [lvl for lvl in np.unique(study) if lvl not in known]
+        if unknown:
+            raise ValueError(
+                f"New study levels {unknown!r} were not present during training "
+                f"({self.study_levels_!r})."
+            )
+
+        Y_scaled = self._mint_result.A[self.indY_]
+        preds = {}
+        for k, block in enumerate(self.block_names_):
+            X_new = np.asarray(X_dict[block], dtype=float)
+            if X_new.ndim != 2:
+                raise ValueError(f"Block {block!r} must be 2-D.")
+            if X_new.shape[0] != n:
+                raise ValueError(
+                    f"Block {block!r} has {X_new.shape[0]} samples, expected {n}."
+                )
+            if X_new.shape[1] != self._X_scale_info_[k].data.shape[1]:
+                raise ValueError(
+                    f"Block {block!r} has {X_new.shape[1]} features, expected "
+                    f"{self._X_scale_info_[k].data.shape[1]}."
+                )
+
+            X_scaled = np.empty_like(X_new, dtype=float)
+            for lvl in self.study_levels_:
+                mask = study == lvl
+                if not mask.any():
+                    continue
+                info = self._X_scale_info_[k]
+                mean = info.means[lvl]
+                if self.scale:
+                    sigma = info.sigmas[lvl]
+                    sigma = np.where(sigma == 0, 1.0, sigma)
+                    X_scaled[mask] = (X_new[mask] - mean) / sigma
+                else:
+                    X_scaled[mask] = X_new[mask] - mean
+
+            t = self._mint_result.variates[k]
+            W = self._mint_result.loadings[k]
+            P = X_scaled.T @ t
+            C = Y_scaled.T @ t
+            ncomp = self.n_components_[k]
+            block_pred = np.empty((n, Y_scaled.shape[1], ncomp), dtype=float)
+            for comp in range(1, ncomp + 1):
+                A = P[:, :comp].T @ W[:, :comp]
+                coef = np.linalg.solve(A, np.eye(comp))
+                Y_pred = X_scaled @ W[:, :comp] @ coef @ C[:, :comp].T
+                block_pred[:, :, comp - 1] = (
+                    Y_pred * self.sigma_Y_ + self.means_Y_
+                )
+            preds[block] = block_pred
+
+        return preds
 
 
 # Compatibility aliases for existing visualization functions

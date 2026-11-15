@@ -1,6 +1,6 @@
 import numpy as np
 import pandas as pd
-from sklearn.base import BaseEstimator, TransformerMixin
+from .._sklearn_compat import BaseEstimator, TransformerMixin
 import uuid
 import logging
 
