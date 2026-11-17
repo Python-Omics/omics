@@ -2,6 +2,7 @@ pycirclize
 matplotlib
 pandas
 numpy
+scikit-learn
 seaborn
 scipy
 adjustText
@@ -16,3 +17,4 @@ fpdf2
 requests
 openai
 python-dotenv
+ipykernel
